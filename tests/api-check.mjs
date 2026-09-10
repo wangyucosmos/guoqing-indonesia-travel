@@ -1,0 +1,24 @@
+import assert from 'node:assert/strict';
+const base=process.env.TEST_ORIGIN||'http://localhost:3001';
+if(!base.startsWith('http://localhost:'))throw Error('This simulated-identity test is local only');
+const suffix=Date.now();const alice='test-alice-'+suffix,bob='test-bob-'+suffix,eve='test-eve-'+suffix;
+async function call(user,path='',body,origin=base){const headers={};if(user){headers['oai-authenticated-user-id']=user;headers['oai-authenticated-user-email']=user+'@example.test'}if(body){headers.Origin=origin;headers['Content-Type']='application/json'}const r=await fetch(base+'/api/travel'+path,{method:body?'POST':'GET',headers,body:body?JSON.stringify(body):undefined});return {status:r.status,data:await r.json()}}
+assert.equal((await call(null,'',{action:'create',name:'x'})).status,401);
+assert.equal((await call(alice,'',{action:'create',name:'x'},'https://attacker.example')).status,403);
+const made=await call(alice,'',{action:'create',name:'API validation '+suffix});assert.equal(made.status,200,JSON.stringify(made));const group=made.data.id;
+let a=await call(alice,'?group='+group);assert.equal(a.status,200);assert.equal(a.data.entries.length,63);const invite=a.data.groups.find(g=>g.id===group).invite;
+assert.equal((await call(eve,'?group='+group)).status,403);
+assert.equal((await call(bob,'',{action:'join',invite})).status,200);
+const privateBudget={kind:'budget',scope:'private',title:'Private test',data:{amount:'100000',currency:'IDR',rate:'0.00045',people:'3',status:'预算'}};
+const p=await call(alice,'',{action:'add',group,entry:privateBudget});assert.equal(p.status,200);
+const b=await call(bob,'?group='+group);assert.ok(!b.data.entries.some(e=>e.id===p.data.id));
+assert.equal((await call(bob,'',{action:'update',group,id:p.data.id,version:1,entry:privateBudget})).status,404);
+const route=a.data.entries.find(e=>e.kind==='route');
+assert.equal((await call(bob,'',{action:'update',group,id:route.id,version:route.version,entry:{...route,title:'Edited together'}})).status,200);
+assert.equal((await call(alice,'',{action:'update',group,id:route.id,version:route.version,entry:route})).status,409);
+assert.equal((await call(alice,'',{action:'delete',group,id:route.id,version:2})).status,200);
+assert.equal((await call(bob,'',{action:'restore',group,id:route.id,version:3})).status,200);
+assert.equal((await call(bob,'',{action:'rotate',group})).status,403);
+assert.equal((await call(alice,'',{action:'rotate',group})).status,200);
+assert.equal((await call(eve,'',{action:'join',invite})).status,404);
+console.log('PASS: unauthenticated write, CSRF, membership isolation, template copy, invitation join, private budget isolation, collaborative edit, version conflict, recycle restore, invitation rotation. Local simulated identities only.');
