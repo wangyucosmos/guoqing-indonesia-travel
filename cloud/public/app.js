@@ -110,6 +110,16 @@ const dayLabel = d => d ? d.slice(5).replace('-', '/') : '';
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
 const MINS = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
 const timeText = d => d.start && d.end ? `${d.start} – ${d.end}` : d.start || d.label || '时间待定';
+/* 分组字段：模块指定了就用它，没指定就退回第一个下拉字段（行李清单、歌单原来就是这个行为） */
+const groupField = m => m.group_by ? m.fields.find(f => f.key === m.group_by)
+                                   : m.fields.find(f => f.type === 'select');
+/* 分组选项：下拉字段用它自己的选项，自由文本字段就从现有数据里收集 */
+function groupValues(m, list) {
+  const f = groupField(m);
+  if (!f) return [];
+  const seen = [...new Set(list.map(e => (e.data[f.key] || '').trim()).filter(Boolean))];
+  return f.options ? f.options.filter(o => seen.includes(o)) : seen.sort((a, b) => a.localeCompare(b, 'zh'));
+}
 
 /* 日期选项：攻略里的 8 天 + 记录里出现过的其它日期 */
 function allDays() {
@@ -304,8 +314,8 @@ function slotCard(m, e) {
 
 /* 勾选布局 */
 function checkLayout(m, list) {
-  const catField = m.fields.find(f => f.type === 'select');
-  const cats = catField ? ['全部', ...catField.options.filter(c => list.some(e => e.data[catField.key] === c))] : [];
+  const catField = groupField(m);
+  const cats = catField ? ['全部', ...groupValues(m, list)] : [];
   const cur = filter[m.id] || '全部';
   const shown = catField && cur !== '全部' ? list.filter(e => e.data[catField.key] === cur) : list;
   const done = shown.filter(e => e.data.done).length;
@@ -327,10 +337,23 @@ function checkLayout(m, list) {
 
 /* 卡片布局 */
 function cardLayout(m, list) {
-  const sceneField = m.builtin === 'music' ? m.fields.find(f => f.key === 'scene') : null;
+  const gf = groupField(m);
+  const vals = gf ? groupValues(m, list) : [];
   const cur = filter[m.id] || '全部';
-  const shown = sceneField && cur !== '全部' ? list.filter(e => e.data.scene === cur) : list;
+  const blank = gf ? list.filter(e => !(e.data[gf.key] || '').trim()).length : 0;
+  const shown = gf && cur !== '全部'
+    ? (cur === '未分类' ? list.filter(e => !(e.data[gf.key] || '').trim())
+                        : list.filter(e => (e.data[gf.key] || '').trim() === cur))
+    : list;
   let extra = '';
+  if (vals.length > 1 || (vals.length && blank)) {
+    extra += `<div class="filterbar">${['全部', ...vals, ...(blank ? ['未分类'] : [])].map(c => {
+      const n = c === '全部' ? list.length
+        : c === '未分类' ? blank
+        : list.filter(e => (e.data[gf.key] || '').trim() === c).length;
+      return `<button data-act="filter" data-m="${m.id}" data-c="${esc(c)}" aria-pressed="${c === cur}">${esc(c)} ${n}</button>`;
+    }).join('')}</div>`;
+  }
   if (m.builtin === 'budget') {
     const sum = st => list.filter(e => e.data.status === st)
       .reduce((n, e) => n + (Number(e.data.amount) || 0) * (Number(e.data.rate) || 0), 0);
@@ -339,11 +362,9 @@ function cardLayout(m, list) {
       <div class="ov"><span>预计总额</span><strong>${f(sum('预算'))}</strong></div>
       <div class="ov"><span>已经支付</span><strong>${f(sum('已支付'))}</strong></div>
       <div class="ov"><span>记录数</span><strong>${list.length}</strong></div></div>
-      <div class="tip">标成「仅自己可见」的记录只有你能看到，队友看不到，也不计入他们的汇总。汇率手动填。</div>`;
+      <div class="tip">标成「仅自己可见」的记录只有你能看到，队友看不到，也不计入他们的汇总。汇率手动填。</div>` + extra;
   }
-  if (m.builtin === 'music') extra = `<div class="tip">只存 10 首的话：${TOP10.join(' / ')}</div>` +
-    (sceneField ? `<div class="filterbar">${['全部', ...sceneField.options].map(c =>
-      `<button data-act="filter" data-m="${m.id}" data-c="${esc(c)}" aria-pressed="${c === cur}">${esc(c)}</button>`).join('')}</div>` : '');
+  if (m.builtin === 'music') extra = `<div class="tip">只存 10 首的话：${TOP10.join(' / ')}</div>` + extra;
   if (!shown.length) return extra + `<div class="empty"><h3>还没有内容</h3><p>点右上角「添加」，大家都能加。</p></div>`;
   return extra + `<div class="list two">${shown.map(e => `<div class="item">
     <div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -397,7 +418,10 @@ function entryDlg() {
   const m = moduleById(mid);
   // 冲突重绘时必须回填用户刚打的字，否则"你填的内容还在"就是句空话
   const dr = editing.draftEntry;
-  const d = dr ? dr.data : (entry?.data || {});
+  const gf = groupField(m);
+  // 新建时，若分组字段是自由文本（比如"谁的航班"），默认填自己的名字
+  const seed = !entry && gf && !gf.options && me.name ? { [gf.key]: me.name } : {};
+  const d = dr ? dr.data : (entry?.data || seed);
   const curTitle = dr ? dr.title : (entry?.title || '');
   const curDay = dr ? dr.day : (editing.day ?? entry?.day ?? '');
   const curScope = dr ? dr.scope : (entry?.scope || 'group');
@@ -435,7 +459,8 @@ function moduleDlg() {
   const fs = editing.fields;
   // 重绘（加字段 / 换类型）时不能把用户已经填的名字图标冲掉
   const dft = editing.draft || { name: m?.name || '', icon: m?.icon || '📌',
-                                 layout: m?.layout || 'card', hidden: !!m?.hidden };
+                                 layout: m?.layout || 'card', hidden: !!m?.hidden,
+                                 groupBy: m?.group_by || '' };
   return `<div class="dlghead"><h3>${m ? '模块设置' : '新建模块'}</h3></div>
     ${m?.builtin ? `<div class="tip">这是内置模块。可以改名字、图标、字段和显示顺序，但不能删除 —— 不想要就隐藏它。</div>` : ''}
     <div class="fld"><span class="fieldlabel">模块名字</span>
@@ -447,6 +472,14 @@ function moduleDlg() {
         <option value="card"${dft.layout === 'card' ? ' selected' : ''}>卡片 —— 一条一张卡，适合清单、推荐、记录</option>
         <option value="check"${dft.layout === 'check' ? ' selected' : ''}>勾选 —— 带复选框，适合待办和要带的东西</option>
       </select></div>`}
+    <div class="fld"><span class="fieldlabel">分组显示</span>
+      <select data-f="groupBy">
+        <option value="">不分组，全部列在一起</option>
+        ${fs.filter(f => f.label).map(f =>
+          `<option value="${esc(f.key)}"${f.key === dft.groupBy ? ' selected' : ''}>按「${esc(f.label)}」分组</option>`).join('')}
+      </select>
+      <p class="small">选了之后，模块顶部会出现分类标签，点一个只看那一类。<br>
+        比如航班按「谁的航班」分组，每个人点自己的名字就只看自己那几段。</p></div>
     <div class="fld"><span class="fieldlabel">字段（每条记录要填什么）</span>
       <div id="fieldList">${fs.map((f, i) => `<div class="fieldrow" data-i="${i}">
         <input data-fl="label" value="${esc(f.label)}" placeholder="字段名" maxlength="20">
@@ -558,7 +591,8 @@ function captureDraft(root) {
     name: $('[data-f="name"]', root)?.value ?? editing.draft?.name ?? '',
     icon: $('[data-f="icon"]', root)?.value ?? editing.draft?.icon ?? '📌',
     layout: $('[data-f="layout"]', root)?.value ?? editing.draft?.layout ?? editing.mod?.layout ?? 'card',
-    hidden: $('[data-f="hidden"]', root)?.checked ?? editing.draft?.hidden ?? !!editing.mod?.hidden
+    hidden: $('[data-f="hidden"]', root)?.checked ?? editing.draft?.hidden ?? !!editing.mod?.hidden,
+    groupBy: $('[data-f="groupBy"]', root)?.value ?? editing.draft?.groupBy ?? editing.mod?.group_by ?? ''
   };
 }
 function collectFields(root) {
@@ -761,6 +795,7 @@ document.addEventListener('click', async e => {
           name, icon: readF(root, 'icon') || '📌',
           layout: m ? m.layout : ($('[data-f="layout"]', root)?.value || 'card'),
           hidden: m ? $('[data-f="hidden"]', root)?.checked : false,
+          groupBy: $('[data-f="groupBy"]', root)?.value || '',
           fields
         });
         closeDlg();

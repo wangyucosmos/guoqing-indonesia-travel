@@ -32,7 +32,8 @@ const BUILTIN = [
     F('notes', '具体计划 / 提醒', 'textarea')] },
   { builtin: 'guide', name: '出发前要知道', icon: '📖', layout: 'card', fields: [
     F('notes', '内容', 'textarea'), F('url', '参考链接', 'url')] },
-  { builtin: 'flight', name: '航班', icon: '✈️', layout: 'card', fields: [
+  { builtin: 'flight', name: '航班', icon: '✈️', layout: 'card', groupBy: 'who', fields: [
+    F('who', '谁的航班'),
     F('from', '出发'), F('to', '到达'), F('no', '航班号'),
     F('dep', '起飞（当地时间）'), F('arr', '到达（当地时间）'),
     F('status', '状态', 'select', ['待预订', '已预订', '已出票', '已值机', '有变动']),
@@ -60,9 +61,10 @@ function seedStatements(db, gid, mid, who, t) {
     const id = uid();
     modIds[m.builtin] = id;
     st.push(db.prepare(
-      `INSERT INTO modules (id,group_id,name,icon,layout,fields,sort,builtin,hidden,version,updated_at,updated_by)
-       VALUES (?,?,?,?,?,?,?,?,0,1,?,?)`
-    ).bind(id, gid, m.name, m.icon, m.layout, JSON.stringify(m.fields), (i + 1) * 100, m.builtin, t, who));
+      `INSERT INTO modules (id,group_id,name,icon,layout,fields,group_by,sort,builtin,hidden,version,updated_at,updated_by)
+       VALUES (?,?,?,?,?,?,?,?,?,0,1,?,?)`
+    ).bind(id, gid, m.name, m.icon, m.layout, JSON.stringify(m.fields), m.groupBy || '',
+           (i + 1) * 100, m.builtin, t, who));
   });
 
   const entry = (modKey, title, data, day = '', sort = 0) => st.push(db.prepare(
@@ -85,7 +87,7 @@ function seedStatements(db, gid, mid, who, t) {
     links: e.links.map(l => l.join('|')).join('\n')
   }, '', i));
   FLIGHTS.forEach(([title, from, to, dep, arr, notes], i) =>
-    entry('flight', title, { from, to, no: '', dep, arr, status: '待预订', notes }, '', i));
+    entry('flight', title, { who, from, to, no: '', dep, arr, status: '待预订', notes }, '', i));
   PACK.forEach(([title, cat, day], i) => entry('pack', title, { cat, notes: '', done: '' }, day, i));
   MUSIC.forEach(([title, artist, scene, notes], i) =>
     entry('music', title, { artist, scene, url: '', notes }, '', i));
@@ -203,21 +205,25 @@ export async function onRequestPost({ request, env }) {
         if (f.type === 'select' && !opts.length) return bad(`「${label}」是下拉框，至少要一个选项`);
         fields.push({ key: str(f.key, 24) || 'f' + fields.length, label, type: f.type, ...(opts ? { options: opts } : {}) });
       }
+      const groupBy = str(b.groupBy, 24) || '';
+      if (groupBy && !fields.some(f => f.key === groupBy)) return bad('分组字段不存在');
+
       if (a === 'moduleAdd') {
         const n = await db.prepare('SELECT count(*) c, max(sort) s FROM modules WHERE group_id=?')
           .bind(gid).first();
         if (n.c >= 24) return bad('模块最多 24 个');
         const id = uid();
         await db.prepare(
-          `INSERT INTO modules (id,group_id,name,icon,layout,fields,sort,builtin,hidden,version,updated_at,updated_by)
-           VALUES (?,?,?,?,?,?,?,NULL,0,1,?,?)`
-        ).bind(id, gid, name, icon, layout, JSON.stringify(fields), (n.s || 0) + 100, t, who).run();
+          `INSERT INTO modules (id,group_id,name,icon,layout,fields,group_by,sort,builtin,hidden,version,updated_at,updated_by)
+           VALUES (?,?,?,?,?,?,?,?,NULL,0,1,?,?)`
+        ).bind(id, gid, name, icon, layout, JSON.stringify(fields), groupBy,
+               (n.s || 0) + 100, t, who).run();
         return J({ id });
       }
       const changed = await db.prepare(
-        `UPDATE modules SET name=?,icon=?,fields=?,hidden=?,version=version+1,updated_at=?,updated_by=?
+        `UPDATE modules SET name=?,icon=?,fields=?,group_by=?,hidden=?,version=version+1,updated_at=?,updated_by=?
          WHERE id=? AND group_id=? AND version=? RETURNING id`
-      ).bind(name, icon, JSON.stringify(fields), b.hidden ? 1 : 0, t, who, b.id, gid, b.version).first();
+      ).bind(name, icon, JSON.stringify(fields), groupBy, b.hidden ? 1 : 0, t, who, b.id, gid, b.version).first();
       return changed ? J({ ok: true }) : bad('队友刚改过这个模块，刷新后再改一次', 409);
     }
 

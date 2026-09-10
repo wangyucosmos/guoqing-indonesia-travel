@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS modules (
   icon        TEXT NOT NULL DEFAULT '📌',
   layout      TEXT NOT NULL DEFAULT 'card',   -- card | check | day
   fields      TEXT NOT NULL DEFAULT '[]',     -- JSON: [{key,label,type,options}]
+  group_by    TEXT NOT NULL DEFAULT '',       -- 按哪个字段分组显示（空 = 不分组），例如航班按"谁的"分
   sort        REAL NOT NULL,
   builtin     TEXT,                            -- route/guide/flight/pack/music/budget/note，自建模块为 NULL
   hidden      INTEGER NOT NULL DEFAULT 0,
