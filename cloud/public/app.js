@@ -93,6 +93,9 @@ function toast(msg) {
     el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:calc(22px + env(safe-area-inset-bottom,0px));background:#16323c;color:#fff;padding:11px 18px;border-radius:22px;font-size:14px;z-index:99;max-width:88vw;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.22);transition:opacity .3s';
     document.body.appendChild(el);
   }
+  // <dialog open> 在浏览器顶层，z-index 再高也盖不过它 —— 弹窗开着时把提示挂进弹窗里
+  const host = $('#dlg')?.open ? $('#dlg') : document.body;
+  if (el.parentNode !== host) host.appendChild(el);
   el.textContent = msg; el.style.opacity = '1';
   clearTimeout(toastTimer); toastTimer = setTimeout(() => el.style.opacity = '0', 2600);
 }
@@ -621,8 +624,15 @@ document.addEventListener('click', async e => {
         }
         break;
       case 'copy':
-        try { await navigator.clipboard.writeText(b.dataset.url); toast('链接已复制'); }
-        catch { toast('复制失败，长按上面的输入框手动复制'); }
+        try {
+          await navigator.clipboard.writeText(b.dataset.url);
+          const label = b.textContent;
+          b.textContent = '✓ 已复制';
+          setTimeout(() => { b.textContent = label; }, 2000);
+          toast('链接已复制，发给搭子就行');
+        } catch {
+          toast('这个浏览器不让自动复制，长按上面的链接手动复制');
+        }
         break;
       case 'rename-me':
         me.name = readF(root, 'who') || '搭子'; LS.set('idn.name', me.name);
