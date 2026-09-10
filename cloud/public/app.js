@@ -150,7 +150,7 @@ function mapSvg() {
 function paint() {
   document.documentElement.dataset.theme = theme;
   $('#themeBtn').textContent = theme === 'dark' ? '☀️' : '🌙';
-  $('#teamBtn').textContent = cloud ? (cloud.group.name.length > 8 ? cloud.group.name.slice(0, 8) + '…' : cloud.group.name) : '创建小组';
+  $('#teamBtn').textContent = cloud ? '👥 ' + (cloud.group.name.length > 6 ? cloud.group.name.slice(0, 6) + '…' : cloud.group.name) : '创建小组';
   paintTabs();
   $('#main').innerHTML = !cloud ? viewLanding() : tab === 'overview' ? viewOverview() : viewModule(tab);
 }
@@ -232,9 +232,11 @@ function cloudbar() {
     <span class="who">
       <span class="avatars">${ms.slice(0, 5).map(m => `<span class="avatar" title="${esc(m.name)}">${esc(initials(m.name))}</span>`).join('')}</span>
       <span class="small">${ms.length} 人</span>
+      <button class="btn out sm" data-act="invite">邀请 / 二维码</button>
       <button class="iconbtn" data-act="refresh" aria-label="刷新">↻</button>
     </span>
-  </div>`;
+  </div>
+  ${ms.length < 2 ? `<div class="tip">现在只有你一个人。<strong>点上面的「邀请 / 二维码」</strong>把链接或二维码发给搭子，他们打开就能一起改 —— 随时都能再找到，不用现在就发。</div>` : ''}`;
 }
 
 /* ---------- 模块页 ---------- */
@@ -493,18 +495,18 @@ function teamDlg() {
   const url = `${location.origin}${location.pathname}#g=${me.gid}&k=${me.key}`;
   let qr = '';
   try { qr = qrSvg(url, { size: 190 }); } catch { qr = '<p class="small">链接太长，生成不了二维码，直接发链接吧。</p>'; }
-  return `<div class="dlghead"><h3>${esc(cloud.group.name)}</h3></div>
-    <p class="small">${(cloud.members || []).map(m => esc(m.name)).join('、')} · 共 ${(cloud.members || []).length} 人</p>
-    <div class="fld"><span class="fieldlabel">你的显示名</span>
-      <div class="linkbox"><input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="给搭子看的名字">
-        <button class="btn sm" data-act="rename-me">改名</button></div></div>
-    <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
-    <h3 style="font-size:16px;margin-bottom:8px">让搭子扫码进来</h3>
+  return `<div class="dlghead"><h3>邀请搭子进来</h3></div>
+    <p class="small">扫码或点链接就能加入，不用注册。<strong>这个页面随时能再打开</strong> —— 每一页顶部都有「邀请 / 二维码」按钮。</p>
     <div style="text-align:center;margin:14px 0"><div class="qrbox">${qr}</div></div>
     <div class="linkbox"><input readonly value="${esc(url)}" aria-label="邀请链接" onclick="this.select()">
       <button class="btn sm" data-act="copy" data-url="${esc(url)}">复制</button></div>
     <div class="tip warn">这条链接就是钥匙 —— <strong>拿到的人不用登录就能编辑全部内容</strong>。只发给同行的搭子，别发到大群或朋友圈。</div>
     <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
+    <h3 style="font-size:16px;margin-bottom:8px">${esc(cloud.group.name)}</h3>
+    <p class="small">成员：${(cloud.members || []).map(m => esc(m.name)).join('、')}（共 ${(cloud.members || []).length} 人）</p>
+    <div class="fld"><span class="fieldlabel">你的显示名</span>
+      <div class="linkbox"><input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="给搭子看的名字">
+        <button class="btn sm out" data-act="rename-me">改名</button></div></div>
     <div class="fld"><span class="fieldlabel">小组名字</span>
       <div class="linkbox"><input data-f="gname" value="${esc(cloud.group.name)}" maxlength="60">
         <button class="btn sm out" data-act="rename-group">保存</button></div></div>
@@ -576,7 +578,7 @@ document.addEventListener('click', async e => {
       case 'trash-off': trashMode = false; paint(); break;
 
       /* 建组 / 加入 */
-      case 'create': case 'join-manual': openDlg(teamDlg()); break;
+      case 'create': case 'join-manual': case 'invite': openDlg(teamDlg()); break;
       case 'create-go': {
         const who = readF(root, 'who') || '发起人', name = readF(root, 'name') || '我们的旅行';
         me.name = who; LS.set('idn.name', who);
