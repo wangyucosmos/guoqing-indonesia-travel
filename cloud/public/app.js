@@ -29,7 +29,7 @@ let cloud = null;                 // {group, modules, entries, members}
 let tab = 'overview';
 let busy = false, lastSync = '', netError = '';
 let editing = null;               // {mode:'entry'|'module', ...}
-let openDays = new Set([DAYS[0].date]);
+let openDay = DAYS[0].date;   // 手风琴：同一时刻只展开一天
 let filter = {};                  // moduleId -> 当前筛选值
 let trashMode = false;
 let theme = LS.get('idn.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -181,7 +181,7 @@ function viewLanding() {
     <p class="swipehint">← 左右滑动看完整行程 →</p>
     <p class="maplegend">位置为示意，只表示相对方位和行程顺序，不能当导航用。</p></div>
   <div class="sec"><h2>每天怎么走</h2></div>
-  ${DAYS.map((d, i) => `<details class="day"${i === 0 ? ' open' : ''}>
+  ${DAYS.map(d => `<details class="day" data-day="${d.date}"${openDay === d.date ? ' open' : ''}>
     <summary><span class="date">${dayLabel(d.date)}</span>
       <span class="ttl"><strong>${esc(d.title)}</strong><small>${esc(d.tag)} · ${d.zone}</small></span>
       <span class="caret">▾</span></summary>
@@ -216,7 +216,7 @@ function viewOverview() {
   <div class="tip">这里是只读总览，改行程去「${esc(route?.name || '路线计划')}」。所有时刻以当地时间为准：雅加达 / 泗水 <strong>UTC+7</strong>，巴厘岛 / Labuan Bajo / 中国 <strong>UTC+8</strong>。</div>
   ${days.map(d => {
     const list = byDay[d].sort((a, b) => (a.data.start || '99:99').localeCompare(b.data.start || '99:99'));
-    return `<details class="day" id="ov-${d}" data-day="${d}"${openDays.has(d) ? ' open' : ''}>
+    return `<details class="day" id="ov-${d}" data-day="${d}"${openDay === d ? ' open' : ''}>
       <summary><span class="date">${dayLabel(d)}</span>
         <span class="ttl"><strong>${esc(dayTitle(d))}</strong><small>${list.length} 个安排</small></span>
         <span class="caret">▾</span></summary>
@@ -279,7 +279,7 @@ function dayLayout(m, list) {
   allDays().map(d => {
     const items = (byDay[d] || []).sort((a, b) => (a.data.start || '99:99').localeCompare(b.data.start || '99:99'));
     const packs = checkMods.flatMap(cm => entriesOf(cm.id).filter(e => e.day === d));
-    return `<details class="day" id="d-${d}" data-day="${d}"${openDays.has(d) ? ' open' : ''}>
+    return `<details class="day" id="d-${d}" data-day="${d}"${openDay === d ? ' open' : ''}>
       <summary><span class="date">${dayLabel(d)}</span>
         <span class="ttl"><strong>${esc(dayTitle(d))}</strong><small>${items.length} 个时间段</small></span>
         <span class="caret">▾</span></summary>
@@ -579,7 +579,7 @@ document.addEventListener('click', async e => {
     const d = PINS[+pin.dataset.pin].d.match(/\d{2}\/\d{2}/);
     if (d) {
       const date = `2026-${d[0].replace('/', '-')}`;
-      openDays.add(date); tab = 'overview'; paint();
+      openDay = date; tab = 'overview'; paint();
       $(`#ov-${date}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     return;
@@ -802,9 +802,18 @@ document.addEventListener('change', async e => {
   paint();
 });
 
+/* 手风琴：展开一天，其它自动收起。
+   收起别的会让页面高度变化，所以记下点击的那一行原来在屏幕上的位置，
+   收完再把滚动条补回去 —— 不然手指点的那一行会突然跳走。 */
 document.addEventListener('toggle', e => {
-  const d = e.target.dataset?.day;
-  if (d) e.target.open ? openDays.add(d) : openDays.delete(d);
+  const el = e.target, d = el.dataset?.day;
+  if (!d) return;
+  if (!el.open) { if (openDay === d) openDay = ''; return; }
+  const before = el.getBoundingClientRect().top;
+  openDay = d;
+  $$('details.day[data-day]').forEach(o => { if (o !== el) o.open = false; });
+  const after = el.getBoundingClientRect().top;
+  if (after !== before) window.scrollBy(0, after - before);
 }, true);
 
 $('#tabs').addEventListener('click', e => {

@@ -94,8 +94,11 @@ html[data-theme="dark"] .btn:not(.out){color:#0d2b33}  /* 描边按钮要留青�
 .day .ttl{flex:1;min-width:0}
 .day .ttl strong{display:block;font-size:15.5px;font-weight:600}
 .day .ttl small{display:block}
-.day .caret{flex:0 0 auto;color:var(--muted);transition:transform .18s}
-.day[open] .caret{transform:rotate(180deg)}
+.day .caret{flex:0 0 auto;color:var(--muted);transition:transform .2s;
+  width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:20px;line-height:1;background:var(--primary-soft)}
+.day>summary:hover .caret{color:var(--primary)}
+.day[open] .caret{transform:rotate(180deg);color:var(--primary)}
 .daybody{padding:0 16px 16px;border-top:1px solid var(--line)}
 .tl{display:grid;grid-template-columns:76px 1fr;gap:10px 12px;padding:14px 0 0}
 .tl time{font-size:13px;color:var(--primary);font-variant-numeric:tabular-nums;padding-top:2px;overflow-wrap:anywhere}
