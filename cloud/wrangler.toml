@@ -7,6 +7,12 @@ name = "guoqing-indonesia-travel"
 main = "worker.js"
 compatibility_date = "2026-05-22"
 
+# 自定义域名。`wrangler deploy` 会自动创建域名绑定和 DNS 记录，不用去控制台点。
+# 想换前缀，改这一行再 deploy 即可。
+[[routes]]
+pattern = "indonesia.cosmoswong.com"
+custom_domain = true
+
 # public/ 里的文件直接由边缘节点提供，命中不会唤起 Worker
 [assets]
 directory = "./public"
