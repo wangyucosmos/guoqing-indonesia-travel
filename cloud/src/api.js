@@ -1,4 +1,4 @@
-/* 国庆印尼旅游 · 云端协作接口（Cloudflare Pages Functions + D1）
+/* 国庆印尼旅游 · 云端协作接口（Cloudflare Worker + D1）
  *
  * 没有账号系统。一个小组 = 一条 groups 记录 + 一串 40 位密钥。
  * 密钥只走 X-Trip-Key 请求头，不放 URL query —— 放 query 会进 Cloudflare 访问日志和 Referer。
@@ -8,7 +8,7 @@
  * 这是给几个人的旅行小组用的，不适合放任何敏感信息。
  */
 
-import { DAYS, ESSENTIALS, MUSIC, FLIGHTS, PACK } from './_seed.js';
+import { DAYS, ESSENTIALS, MUSIC, FLIGHTS, PACK } from './seed.js';
 
 const J = (data, status = 200) =>
   Response.json(data, {

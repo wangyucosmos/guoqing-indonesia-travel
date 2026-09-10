@@ -1,13 +1,16 @@
-# Cloudflare Pages 配置。
-# 注意：只要这个文件存在，Pages 就以它为准，**控制台里配的绑定会被忽略**。
-# 所以数据库绑定必须写在这里，不能靠控制台点。
+# Cloudflare Worker（带静态资源）配置。
+#
+# 为什么不是 Pages：Cloudflare 新版接入流程走 `wrangler deploy` 部署 Worker，
+# Pages 正在被并入 Workers。功能一样，这个形态更长久。
 
 name = "guoqing-indonesia-travel"
-pages_build_output_dir = "public"
-
-# 本机 wrangler 4.92 最高支持到这个日期；线上运行时兼容更新的日期，
-# 保持一致可以让本地和线上行为一样。
+main = "worker.js"
 compatibility_date = "2026-05-22"
+
+# public/ 里的文件直接由边缘节点提供，命中不会唤起 Worker
+[assets]
+directory = "./public"
+binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"                                        # 代码里读的是 env.DB，别改

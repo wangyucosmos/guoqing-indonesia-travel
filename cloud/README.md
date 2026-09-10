@@ -3,8 +3,8 @@
 搭子扫码进来，一起编辑行程、清单、预算；模块和字段本身也能自己加。
 没有账号系统 —— 一条带密钥的链接就是入场券。
 
-- 前端：`public/`（原生 JS，无构建步骤）
-- 接口：`functions/api/travel.js`（Cloudflare Pages Functions）
+- 前端：`public/`（原生 JS，无构建步骤），由 Cloudflare 静态资源直接分发
+- 接口：`src/api.js`，入口 `worker.js`（Cloudflare Worker）
 - 数据库：Cloudflare D1，建表脚本 `schema.sql`
 - 二维码：`public/qr.js`，本地生成，不调任何第三方二维码服务
 
@@ -28,27 +28,19 @@ Cloudflare 控制台 → **Domain Registration** → **Register Domain**。
 Cloudflare 控制台 → **Storage & Databases → D1** → **Create**，
 名字填 `guoqing-indonesia`。
 
-### 3. 建 Pages 项目
+### 3. 部署
 
-**Workers & Pages → Create → Pages → Connect to Git**，选 `guoqing-indonesia-travel` 仓库，构建设置：
+```bash
+cd cloud && npx wrangler deploy
+```
 
-| 项 | 值 |
-|---|---|
-| Framework preset | None |
-| Build command | 留空 |
-| Build output directory | `public` |
-| Root directory | `cloud` |
+数据库绑定写在 `wrangler.toml` 里，不用在控制台配 —— 而且**只要这个文件存在，
+控制台里配的绑定就会被忽略**，别在两处各配一份。
 
-### 4. 绑定数据库
+想接 GitHub 自动部署：Worker → Settings → Builds → Connect，
+根目录填 `cloud`，构建命令**留空**，部署命令 `npx wrangler deploy`。
 
-项目 **Settings → Functions → D1 database bindings → Add binding**：
-
-- Variable name：`DB`（**必须叫这个**，代码里读的是 `env.DB`）
-- D1 database：`guoqing-indonesia`
-
-Production 和 Preview 两个环境都要加。加完**重新部署一次**才生效。
-
-### 5. 建表
+### 4. 建表
 
 在本机仓库目录下跑一次（`--remote` 是打到线上库，不是本地）：
 
@@ -56,12 +48,12 @@ Production 和 Preview 两个环境都要加。加完**重新部署一次**才�
 npx wrangler d1 execute guoqing-indonesia --remote --file cloud/schema.sql
 ```
 
-### 6. 绑定域名
+### 5. 绑定域名
 
 项目 **Custom domains → Set up a custom domain**，填你买的域名。
 证书几分钟内自动签发。
 
-### 7. 验收（这一步不能省）
+### 6. 验收（这一步不能省）
 
 用**手机蜂窝网络**（不是 Wi-Fi）打开域名，确认：
 
@@ -77,8 +69,7 @@ npx wrangler d1 execute guoqing-indonesia --remote --file cloud/schema.sql
 ## 本地开发
 
 ```bash
-cd cloud
-npx wrangler pages dev public --d1 DB=guoqing-indonesia --port 8788 --persist-to .wrangler/state
+cd cloud && npx wrangler dev --port 8788 --persist-to .wrangler/state
 ```
 
 首次要给本地库建表 —— miniflare 的库文件在
@@ -123,10 +114,11 @@ npx wrangler pages dev public --d1 DB=guoqing-indonesia --port 8788 --persist-to
 ```
 cloud/
 ├── schema.sql                 建表（groups / members / modules / entries）
-├── wrangler.toml              本地开发配置
-├── functions/api/
-│   ├── travel.js              全部接口：建组/加入/模块增删改/记录增删改/回收站
-│   └── _seed.js               建组时铺的初始攻略数据（下划线开头不会成为路由）
+├── wrangler.toml              Worker 配置 + D1 绑定
+├── worker.js                  入口：/api/travel 交给 src/api.js，其余走静态资源
+├── src/
+│   ├── api.js                 全部接口：建组/加入/模块增删改/记录增删改/回收站
+│   └── seed.js                建组时铺的初始攻略数据
 └── public/
     ├── index.html             页面骨架
     ├── app.js                 主应用，按云端返回的模块定义动态渲染
