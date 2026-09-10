@@ -1,0 +1,8 @@
+name = "guoqing-indonesia-travel"
+pages_build_output_dir = "public"
+compatibility_date = "2026-05-22"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "guoqing-indonesia"
+database_id = "00000000-0000-4000-8000-000000000001"
