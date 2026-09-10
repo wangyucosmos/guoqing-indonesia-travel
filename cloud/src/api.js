@@ -295,6 +295,16 @@ export async function onRequestPost({ request, env }) {
       return J({ ok: true });
     }
 
+    /* 移除成员：换设备时留下的重复身份，或者退出的人 */
+    if (a === 'memberRemove') {
+      const target = str(b.target, 40);
+      if (!target) return bad('缺少成员标识');
+      const n = await db.prepare('SELECT count(*) c FROM members WHERE group_id=?').bind(gid).first();
+      if ((n?.c ?? 0) <= 1) return bad('至少要留一个人');
+      await db.prepare('DELETE FROM members WHERE group_id=? AND member_id=?').bind(gid, target).run();
+      return J({ ok: true });
+    }
+
     if (a === 'rename') {
       const name = str(b.name, 60);
       if (!name) return bad('小组名需要 1–60 字');

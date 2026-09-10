@@ -470,14 +470,22 @@ function moduleDlg() {
 
 /* 搭子扫码进来的第一屏。不能用 prompt() —— 微信内置浏览器等环境不支持，会直接卡住 */
 function joinDlg() {
+  const ms = cloud?.members || [];
   return `<div class="dlghead"><h3>加入「${esc(cloud?.group?.name || '这个旅行小组')}」</h3></div>
-    <p>填个名字就能开始，<strong>不用注册，也不用装 App</strong>。名字只是给同行的搭子看的，方便知道每条是谁改的。</p>
+    ${ms.length ? `
+      <p>你是下面这些人里的谁吗？<strong>在别的手机或电脑上已经进过组的，选自己</strong> ——
+        这样两台设备算同一个人，不会重复占位置，改过的东西也都记在同一个名下。</p>
+      <div class="group-list">${ms.map(m =>
+        `<button data-act="claim" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}">${esc(m.name)}</button>`
+      ).join('')}</div>
+      <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
+      <p style="font-weight:600;font-size:14px;margin-bottom:2px">都不是，我是新来的</p>` :
+      `<p>填个名字就能开始，<strong>不用注册，也不用装 App</strong>。名字只是给同行的搭子看的，方便知道每条是谁改的。</p>`}
     <div class="fld"><span class="fieldlabel">你叫什么</span>
       <input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="比如：小李" autofocus></div>
     <div class="row" style="margin-top:16px">
       <button class="btn" data-act="join-confirm">${busy ? '正在加入…' : '进去看看'}</button>
-    </div>
-    <p class="small">进去之后你和其他人改的内容会互相同步。</p>`;
+    </div>`;
 }
 
 function teamDlg() {
@@ -506,7 +514,16 @@ function teamDlg() {
     <div class="tip warn">这条链接就是钥匙 —— <strong>拿到的人不用登录就能编辑全部内容</strong>。只发给同行的搭子，别发到大群或朋友圈。</div>
     <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
     <h3 style="font-size:16px;margin-bottom:8px">${esc(cloud.group.name)}</h3>
-    <p class="small">成员：${(cloud.members || []).map(m => esc(m.name)).join('、')}（共 ${(cloud.members || []).length} 人）</p>
+    <div class="fld"><span class="fieldlabel">成员（共 ${(cloud.members || []).length} 人）</span>
+      ${(cloud.members || []).map(m => `<div class="memberrow">
+        <span class="avatar">${esc(initials(m.name))}</span>
+        <span class="mname">${esc(m.name)}${m.member_id === me.id ? ' · 这台设备' : ''}</span>
+        ${m.member_id === me.id ? '' : `
+          <button class="textbtn" data-act="claim" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}">这也是我</button>
+          <button class="iconbtn" data-act="member-del" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}" aria-label="移除 ${esc(m.name)}">🗑</button>`}
+      </div>`).join('')}
+      <p class="small" style="margin-top:8px">换了设备重复进组的，点「这也是我」把这台设备并过去；多出来的空身份可以直接移除。</p>
+    </div>
     <div class="fld"><span class="fieldlabel">你的显示名</span>
       <div class="linkbox"><input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="给搭子看的名字">
         <button class="btn sm out" data-act="rename-me">改名</button></div></div>
@@ -609,6 +626,22 @@ document.addEventListener('click', async e => {
         openDlg(joinDlg());
         break;
       }
+      /* 认领已有身份：把本机的 member id 换成对方的，两台设备从此算同一个人 */
+      case 'claim': {
+        const mid = b.dataset.mid, nm = b.dataset.name;
+        me.id = mid; LS.set('idn.member', mid);
+        me.name = nm; LS.set('idn.name', nm);
+        await act({ action: 'join' }, { keepDialog: true });
+        closeDlg(); tab = 'overview'; paint();
+        toast(`这台设备现在是「${nm}」了`);
+        break;
+      }
+      case 'member-del': {
+        if (!confirm(`把「${b.dataset.name}」从成员里移除？\n他已经改过的内容会留着，只是不再显示在成员列表里。`)) break;
+        await act({ action: 'memberRemove', target: b.dataset.mid }, { keepDialog: true });
+        openDlg(teamDlg());
+        break;
+      }
       case 'join-confirm': {
         const who = readF(root, 'who');
         if (!who) { toast('填个名字吧，随便什么都行'); break; }
@@ -623,17 +656,28 @@ document.addEventListener('click', async e => {
           LS.set('idn.gid', ''); me.gid = ''; me.key = ''; cloud = null; closeDlg(); paint();
         }
         break;
-      case 'copy':
-        try {
-          await navigator.clipboard.writeText(b.dataset.url);
+      case 'copy': {
+        let done = false;
+        try { await navigator.clipboard.writeText(b.dataset.url); done = true; } catch {}
+        if (!done) {
+          // 部分内置浏览器不给用剪贴板 API，退回到"选中 + execCommand"这套老办法
+          const box = b.closest('.linkbox')?.querySelector('input[readonly]');
+          if (box) {
+            box.focus();
+            box.setSelectionRange(0, box.value.length);
+            try { done = document.execCommand('copy'); } catch {}
+          }
+        }
+        if (done) {
           const label = b.textContent;
           b.textContent = '✓ 已复制';
           setTimeout(() => { b.textContent = label; }, 2000);
           toast('链接已复制，发给搭子就行');
-        } catch {
+        } else {
           toast('这个浏览器不让自动复制，长按上面的链接手动复制');
         }
         break;
+      }
       case 'rename-me':
         me.name = readF(root, 'who') || '搭子'; LS.set('idn.name', me.name);
         await act({ action: 'join' }, { keepDialog: true }); openDlg(teamDlg()); toast('改好了');
