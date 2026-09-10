@@ -1,8 +1,15 @@
+# Cloudflare Pages 配置。
+# 注意：只要这个文件存在，Pages 就以它为准，**控制台里配的绑定会被忽略**。
+# 所以数据库绑定必须写在这里，不能靠控制台点。
+
 name = "guoqing-indonesia-travel"
 pages_build_output_dir = "public"
+
+# 本机 wrangler 4.92 最高支持到这个日期；线上运行时兼容更新的日期，
+# 保持一致可以让本地和线上行为一样。
 compatibility_date = "2026-05-22"
 
 [[d1_databases]]
-binding = "DB"
+binding = "DB"                                        # 代码里读的是 env.DB，别改
 database_name = "guoqing-indonesia"
-database_id = "00000000-0000-4000-8000-000000000001"
+database_id = "027fadf5-bf69-483f-b31a-63bda3434e35"  # APAC 区
