@@ -204,3 +204,35 @@ html[data-theme="dark"] .avatar{color:#0d2b33}
 .histhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
 .histbody{font-size:14px;margin-bottom:10px}
 .histbody .meta{margin-top:2px}
+
+/* ===== 动效 ===== */
+/* 页签切换：主内容淡出再淡入 */
+#main{transition:opacity .16s ease,transform .16s ease}
+#main.leave{opacity:0;transform:translateY(6px)}
+/* 切换后的列表逐个浮现（只在 .fresh 期间，15 秒同步重绘不触发） */
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+#main.fresh .item,#main.fresh .slot,#main.fresh .check,#main.fresh details.day,#main.fresh .ov,#main.fresh .cloudbar,#main.fresh .hero,#main.fresh .mapwrap{
+  animation:rise .45s cubic-bezier(.2,.8,.2,1) both}
+#main.fresh > :nth-child(2){animation-delay:.04s}#main.fresh > :nth-child(3){animation-delay:.08s}
+#main.fresh > :nth-child(4){animation-delay:.12s}#main.fresh > :nth-child(5){animation-delay:.16s}
+#main.fresh > :nth-child(6){animation-delay:.20s}#main.fresh > :nth-child(7){animation-delay:.24s}
+#main.fresh > :nth-child(8){animation-delay:.28s}#main.fresh > :nth-child(n+9){animation-delay:.32s}
+#main.fresh .list > :nth-child(1){animation-delay:.05s}#main.fresh .list > :nth-child(2){animation-delay:.1s}
+#main.fresh .list > :nth-child(3){animation-delay:.15s}#main.fresh .list > :nth-child(4){animation-delay:.2s}
+#main.fresh .list > :nth-child(5){animation-delay:.25s}#main.fresh .list > :nth-child(n+6){animation-delay:.3s}
+/* 手风琴：展开时内容区由 JS 控制高度，这里只保证不闪 */
+.daybody{will-change:height,opacity}
+.day .caret{transition:transform .32s cubic-bezier(.2,.8,.2,1),background .2s,color .2s}
+/* 弹窗：缩放淡入，背景淡入 */
+@keyframes dlgIn{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+dialog[open]{animation:dlgIn .24s cubic-bezier(.2,.8,.2,1)}
+dialog[open]::backdrop{animation:fadeIn .24s ease}
+/* 卡片悬停轻微上浮 */
+.item,.slot,.check{transition:transform .25s cubic-bezier(.2,.8,.2,1),box-shadow .25s}
+@media(hover:hover){.item:hover,.slot:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.08)}}
+/* 页签下划线滑动感 */
+.tabs button{transition:color .2s,border-color .25s}
+@media(prefers-reduced-motion:reduce){
+  #main,#main.fresh *,dialog[open],dialog[open]::backdrop,.day .caret{animation:none!important;transition:none!important}
+}

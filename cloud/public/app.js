@@ -985,23 +985,75 @@ document.addEventListener('change', async e => {
   paint();
 });
 
-/* 手风琴：展开一天，其它自动收起。
-   收起别的会让页面高度变化，所以记下点击的那一行原来在屏幕上的位置，
-   收完再把滚动条补回去 —— 不然手指点的那一行会突然跳走。 */
-document.addEventListener('toggle', e => {
-  const el = e.target, d = el.dataset?.day;
-  if (!d) return;
-  if (!el.open) { if (openDay === d) openDay = ''; return; }
-  const before = el.getBoundingClientRect().top;
+/* 手风琴，带动画。
+   原生 <details> 开合是硬切，这里接管 summary 的点击：
+   展开 = 高度 0→实际高、透明度 0→1；收起反过来。
+   同一时刻只开一天：点开新的，旧的同时收起。旧的在上方时，它收起会把
+   页面往上拽，所以在同一个动画循环里按同样的进度把滚动条补回去 —— 手指点的那一行纹丝不动。 */
+const EASE = t => 1 - Math.pow(1 - t, 3);
+function tween(dur, step, done) {
+  const t0 = performance.now();
+  let finished = false;
+  const finish = () => { if (finished) return; finished = true; step(1); done && done(); };
+  (function f(now) {
+    if (finished) return;
+    const p = Math.min(1, (now - t0) / dur);
+    step(EASE(p));
+    if (p < 1) requestAnimationFrame(f); else finish();
+  })(t0);
+  // 页面在后台时 rAF 不跑，用定时器兜底，保证状态一定收尾
+  setTimeout(finish, dur + 80);
+}
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function dayOpen(det) {
+  const body = det.querySelector('.daybody');
+  det.open = true; det.dataset.anim = '1';
+  if (reduceMotion) { delete det.dataset.anim; return; }
+  const pad = parseFloat(getComputedStyle(body).paddingBottom) || 0;
+  const h = body.scrollHeight - pad;
+  Object.assign(body.style, { height: '0px', paddingBottom: '0px', opacity: '0', overflow: 'hidden' });
+  tween(360, e => { body.style.height = (h * e) + 'px'; body.style.paddingBottom = (pad * e) + 'px'; body.style.opacity = e; },
+    () => { body.style.cssText = ''; delete det.dataset.anim; });
+}
+function dayClose(det, compensate) {
+  const body = det.querySelector('.daybody');
+  if (reduceMotion) { det.open = false; return; }
+  const pad = parseFloat(getComputedStyle(body).paddingBottom) || 0;
+  const full = body.offsetHeight, h = full - pad, y0 = window.scrollY;
+  det.dataset.anim = '1';
+  Object.assign(body.style, { height: h + 'px', paddingBottom: pad + 'px', overflow: 'hidden' });
+  tween(300, e => {
+    body.style.height = (h * (1 - e)) + 'px'; body.style.paddingBottom = (pad * (1 - e)) + 'px'; body.style.opacity = 1 - e;
+    if (compensate) window.scrollTo(0, y0 - full * e);
+  }, () => { det.open = false; body.style.cssText = ''; delete det.dataset.anim; });
+}
+document.addEventListener('click', e => {
+  const sum = e.target.closest('details.day[data-day] > summary');
+  if (!sum) return;
+  e.preventDefault();
+  const det = sum.parentElement, d = det.dataset.day;
+  if (det.dataset.anim) return;                     // 动画中别重复触发
+  if (det.open) { dayClose(det, false); if (openDay === d) openDay = ''; return; }
   openDay = d;
-  $$('details.day[data-day]').forEach(o => { if (o !== el) o.open = false; });
-  const after = el.getBoundingClientRect().top;
-  if (after !== before) window.scrollBy(0, after - before);
-}, true);
+  $$('details.day[data-day]').forEach(o => {
+    if (o !== det && o.open && !o.dataset.anim)
+      dayClose(o, o.compareDocumentPosition(det) & Node.DOCUMENT_POSITION_FOLLOWING);  // 在上方才补偿
+  });
+  dayOpen(det);
+});
 
 $('#tabs').addEventListener('click', e => {
   const t = e.target.closest('button[data-tab]');
-  if (t) { tab = t.dataset.tab; trashMode = false; paint(); window.scrollTo(0, 0); }
+  if (!t || t.dataset.tab === tab) return;
+  const main = $('#main');
+  tab = t.dataset.tab; trashMode = false;
+  if (reduceMotion) { paint(); window.scrollTo(0, 0); return; }
+  main.classList.add('leave');
+  setTimeout(() => {
+    paint(); window.scrollTo(0, 0);
+    main.classList.remove('leave'); main.classList.add('fresh');
+    setTimeout(() => main.classList.remove('fresh'), 900);
+  }, 160);
 });
 $('#themeBtn').addEventListener('click', () => { theme = theme === 'dark' ? 'light' : 'dark'; LS.set('idn.theme', theme); paint(); });
 $('#teamBtn').addEventListener('click', () => openDlg(teamDlg()));
@@ -1033,6 +1085,7 @@ async function startInvite() {
 
 /* 启动 */
 (async () => {
+  $('#main').classList.add('fresh'); setTimeout(() => $('#main').classList.remove('fresh'), 1200);
   paint();
   if (pendingTransfer) { openDlg(transferDlg()); $('[data-f="code"]').value = pendingTransfer; return; }
   if (pendingInvite) { await startInvite(); return; }
