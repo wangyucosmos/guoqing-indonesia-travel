@@ -1,11 +1,13 @@
 /* 国庆印尼旅游 · 云端协作版
  *
- * 两种状态：
+ * 状态：
  *   没有小组 —— 只读公开攻略（数据来自 seed.js），底部引导创建小组
- *   有小组   —— 全部内容从云端来，所有人可编辑；模块和字段本身也能改
+ *   有小组   —— 全部内容从云端来；能改什么由角色和模块锁决定
  *
- * 身份：没有账号。链接里的 #k= 是入场券，本机随机生成一个 member id 用来标记"谁改的"。
- * 密钥放 # 片段（浏览器不会发给服务器），调接口时才放进 X-Trip-Key 请求头。
+ * 身份：没有账号，但每个人有自己的钥匙（token），存在本机 localStorage，
+ * 调接口时放进 X-Trip-Key 请求头。服务器由钥匙确定"你是谁"，不信任客户端自报。
+ * 邀请链接 #g=…&i=… 只带邀请码；换设备用 #t=… 的 8 位数字码。
+ * 旧版 #g=…&k=… 链接过渡期内仍能读，读一次就自动换发个人钥匙。
  */
 import { qrSvg } from './qr.js';
 import { DAYS, ESSENTIALS, PINS, TOP10 } from './seed.js';
@@ -19,13 +21,16 @@ const LS = { get: k => { try { return localStorage.getItem(k) } catch { return n
 
 /* ---------------- 本机状态 ---------------- */
 const me = {
-  gid: '', key: '',
+  gid: '', token: '', legacyKey: '',
   id: LS.get('idn.member') || '',
   name: LS.get('idn.name') || ''
 };
 if (!me.id) { me.id = uid(); LS.set('idn.member', me.id); }
+/* 从地址栏拿到但还没处理的东西 */
+let pendingInvite = null;    // {gid, code}   扫了邀请码，等填名字
+let pendingTransfer = '';    // 8 位换设备码
 
-let cloud = null;                 // {group, modules, entries, members}
+let cloud = null;                 // {group, me, members, pending, modules, entries}
 let tab = 'overview';
 let busy = false, lastSync = '', netError = '';
 let editing = null;               // {mode:'entry'|'module', ...}
@@ -34,37 +39,46 @@ let filter = {};                  // moduleId -> 当前筛选值
 let trashMode = false;
 let theme = LS.get('idn.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
-/* 从 # 片段读小组信息，读完立刻清掉地址栏，避免截图/转发时泄露密钥 */
+const loadGroup = gid => {
+  me.gid = gid;
+  me.token = LS.get('idn.tok.' + gid) || '';
+  me.legacyKey = LS.get('idn.key.' + gid) || '';
+};
+/* 从 # 片段读信息，读完立刻清掉地址栏，避免截图/转发时泄露 */
 (function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
-  const g = h.get('g'), k = h.get('k');
-  if (g && k) {
-    me.gid = g; me.key = k;
-    LS.set('idn.gid', g); LS.set('idn.key.' + g, k);
-    history.replaceState(null, '', location.pathname);
-  } else {
-    const last = LS.get('idn.gid');
-    if (last) { me.gid = last; me.key = LS.get('idn.key.' + last) || ''; }
+  const g = h.get('g'), i = h.get('i'), k = h.get('k'), t = h.get('t');
+  if (location.hash) history.replaceState(null, '', location.pathname);
+  if (t && /^\d{8}$/.test(t)) { pendingTransfer = t; return; }
+  if (g && i) { pendingInvite = { gid: g, code: i }; loadGroup(g); return; }
+  if (g && k) {                          // 旧版链接：存下来走过渡通道
+    LS.set('idn.gid', g); LS.set('idn.key.' + g, k); loadGroup(g); return;
   }
+  const last = LS.get('idn.gid');
+  if (last) loadGroup(last);
 })();
+const authKey = () => me.token || me.legacyKey;
+const saveToken = (gid, tok) => { me.token = tok; LS.set('idn.tok.' + gid, tok); LS.set('idn.gid', gid); me.gid = gid; };
 
 /* ---------------- 接口 ---------------- */
-async function api(body) {
-  const r = await fetch('./api/travel', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Trip-Key': me.key },
-    body: JSON.stringify({ ...body, group: me.gid, member: me.id, who: me.name || '搭子' })
-  });
+async function api(body, { auth = true } = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (auth && authKey()) headers['X-Trip-Key'] = authKey();
+  const r = await fetch('./api/travel', { method: 'POST', headers,
+    body: JSON.stringify({ ...body, group: body.group ?? me.gid }) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(d.error || '操作没有完成'); e.status = r.status; throw e; }
   return d;
 }
+/* 拉全量。旧钥匙过渡时服务器可能顺手发一把个人钥匙，收到就存起来、丢掉旧的。 */
 async function pull() {
-  if (!me.gid || !me.key) return;
-  const r = await fetch(`./api/travel?g=${encodeURIComponent(me.gid)}&m=${encodeURIComponent(me.id)}`,
-    { headers: { 'X-Trip-Key': me.key }, cache: 'no-store' });
+  if (!me.gid || !authKey()) return;
+  const q = `g=${encodeURIComponent(me.gid)}&m=${encodeURIComponent(me.id)}`;
+  const r = await fetch(`./api/travel?${q}`, { headers: { 'X-Trip-Key': authKey() }, cache: 'no-store' });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || '读取失败');
+  if (d.issuedToken) { saveToken(me.gid, d.issuedToken); me.legacyKey = ''; LS.set('idn.key.' + me.gid, ''); }
+  if (d.me?.name) { me.name = d.me.name; LS.set('idn.name', me.name); }
   cloud = d;
   lastSync = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
   netError = '';
@@ -101,6 +115,10 @@ function toast(msg) {
 }
 
 /* ---------------- 小工具 ---------------- */
+const isOwner = () => cloud?.me?.role === 'owner';
+const canEdit = m => !!cloud?.me && cloud.me.status === 'active' &&
+  (cloud.me.role === 'owner' || (cloud.me.role === 'editor' && !m.locked));
+const ROLE_NAME = { owner: '组长', editor: '可编辑', viewer: '只读' };
 const modules = () => (cloud?.modules || []).filter(m => !m.hidden);
 const moduleById = id => (cloud?.modules || []).find(m => m.id === id);
 const entriesOf = id => (cloud?.entries || []).filter(e => e.module_id === id && !e.deleted);
@@ -165,14 +183,33 @@ function paint() {
   $('#themeBtn').textContent = theme === 'dark' ? '☀️' : '🌙';
   $('#teamBtn').textContent = cloud ? '👥 ' + (cloud.group.name.length > 6 ? cloud.group.name.slice(0, 6) + '…' : cloud.group.name) : '创建小组';
   paintTabs();
-  $('#main').innerHTML = !cloud ? viewLanding() : tab === 'overview' ? viewOverview() : viewModule(tab);
+  $('#main').innerHTML = !cloud ? viewLanding()
+    : cloud.pending ? viewPending()
+    : cloud.ownerSetupNeeded ? viewOwnerSetup()
+    : tab === 'overview' ? viewOverview() : viewModule(tab);
+}
+function viewPending() {
+  return `<section class="landing"><p class="eyebrow">等待确认</p>
+    <h1>已经申请加入「${esc(cloud.group.name)}」</h1>
+    <p class="muted">这个小组开了入组审批，组长同意后就能看到内容。这个页面会自动刷新，你也可以先关掉，之后再打开。</p>
+    <div style="margin:18px 0"><button class="btn out" data-act="refresh">刷新看看</button></div></section>`;
+}
+function viewOwnerSetup() {
+  return `<section class="landing"><p class="eyebrow">组长身份待激活</p>
+    <h1>「${esc(cloud.group.name)}」升级了权限系统</h1>
+    <p class="muted">这台设备之前是用旧链接进的。组长身份需要用<strong>专门的设置链接</strong>激活一次，
+      不能通过旧链接自动升级 —— 不然拿到旧链接的人也能当组长。</p>
+    <p class="small">设置链接由部署的人单独交给你，打开就好。如果这台设备只是你的第二台设备，
+      在已经激活的那台上点「换设备」拿一个 8 位码，在这里输入。</p>
+    <div style="margin:18px 0"><button class="btn out" data-act="transfer-redeem">我有换设备码</button></div></section>`;
 }
 function paintTabs() {
   const nav = $('#tabs');
   if (!cloud) { nav.innerHTML = ''; return; }
+  if (cloud.pending || cloud.ownerSetupNeeded) { nav.innerHTML = ''; return; }
   nav.innerHTML = `<button role="tab" data-tab="overview" aria-selected="${tab === 'overview'}">总览</button>` +
-    modules().map(m => `<button role="tab" data-tab="${m.id}" aria-selected="${tab === m.id}">${esc(m.icon)} ${esc(m.name)}</button>`).join('') +
-    `<button role="tab" data-act="module-add" style="color:var(--primary)">＋ 新模块</button>`;
+    modules().map(m => `<button role="tab" data-tab="${m.id}" aria-selected="${tab === m.id}">${esc(m.icon)} ${esc(m.name)}${m.locked && !isOwner() ? ' 🔒' : ''}</button>`).join('') +
+    (isOwner() ? `<button role="tab" data-act="module-add" style="color:var(--primary)">＋ 新模块</button>` : '');
 }
 
 /* ---------- 没建组：只读公开攻略 ---------- */
@@ -222,7 +259,7 @@ function viewOverview() {
     <p class="swipehint">← 左右滑动看完整行程 →</p>
     <p class="maplegend">位置为示意，只表示相对方位和行程顺序，<strong>不能当导航用</strong>。点任意一个地点跳到当天。</p></div>
   <div class="sec"><div><p class="eyebrow">THE JOURNEY</p><h2>每天怎么走</h2></div>
-    ${route ? `<button class="btn sm out" data-act="goto" data-id="${route.id}">去编辑行程</button>` : ''}</div>
+    ${route ? `<button class="btn sm out" data-act="goto" data-id="${route.id}">${canEdit(route) ? '去编辑行程' : '看行程'}</button>` : ''}</div>
   <div class="tip">这里是只读总览，改行程去「${esc(route?.name || '路线计划')}」。所有时刻以当地时间为准：雅加达 / 泗水 <strong>UTC+7</strong>，巴厘岛 / Labuan Bajo / 中国 <strong>UTC+8</strong>。</div>
   ${days.map(d => {
     const list = byDay[d].sort((a, b) => (a.data.start || '99:99').localeCompare(b.data.start || '99:99'));
@@ -245,11 +282,13 @@ function cloudbar() {
     <span class="who">
       <span class="avatars">${ms.slice(0, 5).map(m => `<span class="avatar" title="${esc(m.name)}">${esc(initials(m.name))}</span>`).join('')}</span>
       <span class="small">${ms.length} 人</span>
-      <button class="btn out sm" data-act="invite">邀请 / 二维码</button>
+      ${isOwner() ? `<button class="btn out sm" data-act="invite">邀请 / 二维码${(cloud.pendingMembers || []).length ? ` <b style="color:var(--warn)">${cloud.pendingMembers.length} 待批</b>` : ''}</button>`
+                  : `<span class="chip plain">${ROLE_NAME[cloud.me?.role] || ''}</span>`}
       <button class="iconbtn" data-act="refresh" aria-label="刷新">↻</button>
     </span>
   </div>
-  ${ms.length < 2 ? `<div class="tip">现在只有你一个人。<strong>点上面的「邀请 / 二维码」</strong>把链接或二维码发给搭子，他们打开就能一起改 —— 随时都能再找到，不用现在就发。</div>` : ''}`;
+  ${isOwner() && ms.length < 2 ? `<div class="tip">现在只有你一个人。<strong>点上面的「邀请 / 二维码」</strong>把链接或二维码发给搭子，他们打开就能一起改 —— 随时都能再找到，不用现在就发。</div>` : ''}
+  ${cloud.me?.role === 'viewer' ? `<div class="tip">你是<strong>只读成员</strong>，能看不能改。想参与编辑，找组长把你改成「可编辑」。</div>` : ''}`;
 }
 
 /* ---------- 模块页 ---------- */
@@ -261,11 +300,12 @@ function viewModule(id) {
   <div class="sec"><div><p class="eyebrow">${m.builtin ? 'OUR TRIP' : 'CUSTOM'}</p>
     <h2>${esc(m.icon)} ${esc(m.name)}${trashMode ? ' · 回收站' : ''}</h2></div>
     <div class="actions">
-      <button class="iconbtn" data-act="module-edit" data-id="${m.id}" aria-label="模块设置">⚙</button>
+      ${isOwner() ? `<button class="iconbtn" data-act="module-edit" data-id="${m.id}" aria-label="模块设置">⚙</button>` : ''}
       ${trashMode ? `<button class="btn sm out" data-act="trash-off">返回</button>`
-        : `<button class="btn sm out" data-act="trash-on">回收站</button>
-           <button class="btn sm" data-act="entry-add" data-id="${m.id}">＋ 添加</button>`}
-    </div></div>`;
+        : canEdit(m) ? `<button class="btn sm out" data-act="trash-on">回收站</button>
+           <button class="btn sm" data-act="entry-add" data-id="${m.id}">＋ 添加</button>` : ''}
+    </div></div>
+  ${m.locked && !isOwner() ? `<div class="tip">🔒 这个模块<strong>只有组长能改</strong>，你可以看。</div>` : ''}`;
   if (trashMode) return head + trashList(all) + foot();
   return head + (m.layout === 'day' ? dayLayout(m, all)
     : m.layout === 'check' ? checkLayout(m, all)
@@ -295,7 +335,7 @@ function dayLayout(m, list) {
         <span class="caret">▾</span></summary>
       <div class="daybody">
         ${items.map(e => slotCard(m, e)).join('') || `<p class="small" style="padding:14px 0 0">这一天还没有安排。</p>`}
-        <button class="btn out sm" style="margin-top:12px" data-act="entry-add" data-id="${m.id}" data-day="${d}">＋ 添加时间段</button>
+        ${canEdit(m) ? `<button class="btn out sm" style="margin-top:12px" data-act="entry-add" data-id="${m.id}" data-day="${d}">＋ 添加时间段</button>` : ''}
         ${packs.length ? `<div class="packhint"><h4>🎒 这一天出门要带</h4>
           <div class="chips">${packs.map(p => `<span class="chip${p.data.done ? ' plain' : ''}">${p.data.done ? '✓ ' : ''}${esc(p.title)}</span>`).join('')}</div>
           <p class="small" style="margin:9px 0 0">在勾选类模块里给条目设置日期，就会出现在这里。</p></div>` : ''}
@@ -305,7 +345,7 @@ function dayLayout(m, list) {
 function slotCard(m, e) {
   return `<div class="slot">
     <div class="slothead"><span class="slottime">${esc(timeText(e.data))}</span>
-      <button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑 ${esc(e.title)}">✎</button></div>
+      ${canEdit(m) ? `<button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑 ${esc(e.title)}">✎</button>` : ''}</div>
     <h4>${esc(e.title) || '未命名'}</h4>
     ${e.data.notes ? `<p class="body">${esc(e.data.notes)}</p>` : ''}
     <div class="byline">${esc(e.updated_by)} · ${new Date(e.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
@@ -326,12 +366,12 @@ function checkLayout(m, list) {
     `<button data-act="filter" data-m="${m.id}" data-c="${esc(c)}" aria-pressed="${c === cur}">${esc(c)}</button>`).join('')}</div>` : ''}
   ${Object.entries(groups).map(([cat, items]) => `<div class="grouphead">${esc(cat)}</div>
     <div class="list">${items.map(e => `<label class="check${e.data.done ? ' done' : ''}">
-      <input type="checkbox" data-act="toggle" data-id="${e.id}" data-v="${e.version}"${e.data.done ? ' checked' : ''}>
+      <input type="checkbox" data-act="toggle" data-id="${e.id}" data-v="${e.version}"${e.data.done ? ' checked' : ''}${canEdit(m) ? '' : ' disabled'}>
       <span class="t"><h4>${esc(e.title)}</h4>
         ${e.day ? `<div class="meta">📅 ${dayLabel(e.day)} 当天携带</div>` : ''}
         ${e.data.notes ? `<div class="meta">${esc(e.data.notes)}</div>` : ''}</span>
-      <button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑">✎</button>
-    </label>`).join('')}</div>`).join('') || `<div class="empty"><h3>还没有条目</h3><p>点右上角「添加」。</p></div>`}
+      ${canEdit(m) ? `<button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑">✎</button>` : ''}
+    </label>`).join('')}</div>`).join('') || `<div class="empty"><h3>还没有条目</h3><p>${canEdit(m) ? '点右上角「添加」。' : ''}</p></div>`}
   ${m.builtin === 'pack' ? `<div class="tip warn" style="margin-top:22px">⚠️ 药品部分只是常见出行打包提醒，<strong>不是医疗建议</strong>。是否携带、用什么、用多少，按自己的身体情况咨询医生或药师；处方药备足全程用量并记下英文药名。</div>` : ''}`;
 }
 
@@ -365,14 +405,14 @@ function cardLayout(m, list) {
       <div class="tip">标成「仅自己可见」的记录只有你能看到，队友看不到，也不计入他们的汇总。汇率手动填。</div>` + extra;
   }
   if (m.builtin === 'music') extra = `<div class="tip">只存 10 首的话：${TOP10.join(' / ')}</div>` + extra;
-  if (!shown.length) return extra + `<div class="empty"><h3>还没有内容</h3><p>点右上角「添加」，大家都能加。</p></div>`;
+  if (!shown.length) return extra + `<div class="empty"><h3>还没有内容</h3><p>${canEdit(m) ? '点右上角「添加」。' : ''}</p></div>`;
   return extra + `<div class="list two">${shown.map(e => `<div class="item">
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div style="flex:1;min-width:0">
         <h4>${esc(e.title)}</h4>
         ${e.day ? `<div class="meta">📅 ${dayLabel(e.day)}</div>` : ''}
       </div>
-      <button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑 ${esc(e.title)}">✎</button>
+      ${canEdit(m) ? `<button class="iconbtn" data-act="entry-edit" data-id="${e.id}" aria-label="编辑 ${esc(e.title)}">✎</button>` : ''}
     </div>
     <div class="chips" style="margin:8px 0">
       ${e.scope === 'private' ? '<span class="chip">🔒 仅自己可见</span>' : ''}
@@ -389,7 +429,7 @@ function cardLayout(m, list) {
 const foot = () => `<footer class="foot">
   国庆印尼旅游 · 内容基于 V9 方案 B · 2026<br>
   航班、签证政策、海况请在出发前 72 小时再核对一次。<br>
-  ${cloud ? '拿到链接的人都能编辑，别在这里放证件号、卡号这类敏感信息。' : ''}
+  ${cloud ? '别在这里放证件号、卡号这类敏感信息。' : ''}
 </footer>`;
 
 /* ================= 弹窗 ================= */
@@ -449,8 +489,24 @@ function entryDlg() {
       <button class="btn" data-act="entry-save">${busy ? '正在保存…' : '保存'}</button>
       <button class="btn out" data-act="close">取消</button>
       <div style="flex:1"></div>
+      ${entry && entry.version > 1 ? `<button class="textbtn" data-act="history" data-id="${entry.id}">改动记录</button>` : ''}
       ${entry ? `<button class="iconbtn" data-act="entry-del" data-id="${entry.id}" data-v="${entry.version}" aria-label="移入回收站">🗑</button>` : ''}
     </div>`;
+}
+function historyDlg(entry, rows) {
+  const fmt = t => new Date(t).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const ACT = { update: '修改', delete: '移入回收站', restore: '从回收站恢复', revert: '回滚' };
+  return `<div class="dlghead"><h3>「${esc(entry.title)}」的改动记录</h3></div>
+    <p class="small">当前是第 ${entry.version} 版，${esc(entry.updated_by)} 于 ${fmt(entry.updated_at)} 改的。下面是之前的版本，可以一键恢复到任何一版。</p>
+    ${rows.length ? rows.map(h => `<div class="hist">
+      <div class="histhead"><strong>第 ${h.version} 版</strong>
+        <span class="small">${esc(h.changed_by)} 之后做了「${ACT[h.action] || h.action}」 · ${fmt(h.changed_at)}</span></div>
+      <div class="histbody"><b>${esc(h.title)}</b>${h.deleted ? ' <span class="chip plain">当时在回收站</span>' : ''}
+        ${Object.entries(h.data).filter(([k, v]) => v && !['start', 'end', 'label'].includes(k)).slice(0, 4)
+          .map(([k, v]) => `<div class="meta">${esc(k)}：${esc(String(v).slice(0, 80))}${String(v).length > 80 ? '…' : ''}</div>`).join('')}</div>
+      <button class="btn sm out" data-act="revert" data-id="${entry.id}" data-to="${h.version}">恢复到这一版</button>
+    </div>`).join('') : '<p class="small">还没有历史版本。</p>'}
+    <div class="row" style="margin-top:14px"><button class="btn out" data-act="entry-edit" data-id="${entry.id}">返回编辑</button></div>`;
 }
 
 const TYPE_NAMES = { text: '单行文字', textarea: '多行文字', number: '数字', date: '日期', time: '时间', select: '下拉选择', url: '链接', check: '勾选' };
@@ -460,7 +516,7 @@ function moduleDlg() {
   // 重绘（加字段 / 换类型）时不能把用户已经填的名字图标冲掉
   const dft = editing.draft || { name: m?.name || '', icon: m?.icon || '📌',
                                  layout: m?.layout || 'card', hidden: !!m?.hidden,
-                                 groupBy: m?.group_by || '' };
+                                 locked: !!m?.locked, groupBy: m?.group_by || '' };
   return `<div class="dlghead"><h3>${m ? '模块设置' : '新建模块'}</h3></div>
     ${m?.builtin ? `<div class="tip">这是内置模块。可以改名字、图标、字段和显示顺序，但不能删除 —— 不想要就隐藏它。</div>` : ''}
     <div class="fld"><span class="fieldlabel">模块名字</span>
@@ -490,6 +546,10 @@ function moduleDlg() {
       </div>`).join('')}</div>
       <button class="btn out sm" data-act="field-add">＋ 加一个字段</button>
       <p class="small">改字段名不会丢已有内容；删字段只是不再显示，数据还在。</p></div>
+    <div class="fld"><label class="row" style="gap:9px">
+      <input type="checkbox" data-f="locked"${dft.locked ? ' checked' : ''} style="width:22px;height:22px;min-height:0">
+      🔒 只有组长能改这个模块里的内容</label>
+      <p class="small" style="margin:6px 0 0 31px">其他人只能看。适合路线、航班这种定下来就不该随便动的东西。</p></div>
     ${m ? `<div class="fld"><label class="row" style="gap:9px">
       <input type="checkbox" data-f="hidden"${dft.hidden ? ' checked' : ''} style="width:22px;height:22px;min-height:0">
       在页签里隐藏这个模块</label></div>` : ''}
@@ -502,29 +562,42 @@ function moduleDlg() {
 }
 
 /* 搭子扫码进来的第一屏。不能用 prompt() —— 微信内置浏览器等环境不支持，会直接卡住 */
-function joinDlg() {
-  const ms = cloud?.members || [];
-  return `<div class="dlghead"><h3>加入「${esc(cloud?.group?.name || '这个旅行小组')}」</h3></div>
-    ${ms.length ? `
-      <p>你是下面这些人里的谁吗？<strong>在别的手机或电脑上已经进过组的，选自己</strong> ——
-        这样两台设备算同一个人，不会重复占位置，改过的东西也都记在同一个名下。</p>
-      <div class="group-list">${ms.map(m =>
-        `<button data-act="claim" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}">${esc(m.name)}</button>`
-      ).join('')}</div>
-      <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
-      <p style="font-weight:600;font-size:14px;margin-bottom:2px">都不是，我是新来的</p>` :
-      `<p>填个名字就能开始，<strong>不用注册，也不用装 App</strong>。名字只是给同行的搭子看的，方便知道每条是谁改的。</p>`}
-    <div class="fld"><span class="fieldlabel">你叫什么</span>
+function joinDlg(info) {
+  return `<div class="dlghead"><h3>加入「${esc(info.name)}」</h3></div>
+    <p>${esc(info.ownerName)} 邀请你一起编辑这次旅行的计划。填个名字就能开始，<strong>不用注册，也不用装 App</strong>。
+      ${info.memberCount ? `已经有 ${info.memberCount} 个人在里面了。` : ''}</p>
+    ${info.approval ? `<div class="tip">这个小组开了入组审批：填完名字后要等组长同意一下。</div>` : ''}
+    <div class="fld"><span class="fieldlabel">你叫什么（给搭子看的）</span>
       <input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="比如：小李" autofocus></div>
     <div class="row" style="margin-top:16px">
       <button class="btn" data-act="join-confirm">${busy ? '正在加入…' : '进去看看'}</button>
-    </div>`;
+    </div>
+    <p class="small" style="margin-top:16px">在别的手机或电脑上已经进过这个组？
+      <button class="textbtn" data-act="transfer-redeem" style="color:var(--primary);text-decoration:underline">用换设备码进来</button>，
+      这样两台设备算同一个人。</p>`;
+}
+function transferDlg(code, exp) {
+  if (code) {
+    const url = `${location.origin}${location.pathname}#t=${code}`;
+    let qr = ''; try { qr = qrSvg(url, { size: 160 }); } catch {}
+    return `<div class="dlghead"><h3>换设备</h3></div>
+      <p class="small">在<strong>新设备</strong>上打开网站，输入下面这串数字；或者直接扫这个码。<strong>10 分钟内有效，只能用一次。</strong>
+        用完之后两台设备都算你，改的东西都记在同一个名下。</p>
+      <div class="codebig">${code.slice(0, 4)} ${code.slice(4)}</div>
+      <div style="text-align:center;margin:10px 0"><div class="qrbox">${qr}</div></div>
+      <div class="row"><button class="btn out" data-act="team">返回</button></div>`;
+  }
+  return `<div class="dlghead"><h3>用换设备码进来</h3></div>
+    <p class="small">在<strong>已经进组的那台设备</strong>上，点顶部的小组按钮 → 「换设备」，会得到 8 位数字。填在这里：</p>
+    <div class="fld"><input data-f="code" inputmode="numeric" maxlength="9" placeholder="8 位数字" style="font-size:22px;letter-spacing:3px;text-align:center"></div>
+    <div class="row"><button class="btn" data-act="transfer-go">${busy ? '正在验证…' : '确认'}</button>
+      <button class="btn out" data-act="close">取消</button></div>`;
 }
 
 function teamDlg() {
   if (!cloud) {
     return `<div class="dlghead"><h3>一起把行程定下来</h3></div>
-      <p>建一个小组，公开攻略会复制一份进去，之后你和搭子都能改。<strong>没有账号，不用注册。</strong></p>
+      <p>建一个小组，公开攻略会复制一份进去，之后你和搭子都能改。<strong>没有账号，不用注册。</strong>建组的人是组长，能管人、锁模块、换邀请链接。</p>
       <div class="fld"><span class="fieldlabel">你叫什么（给搭子看的）</span>
         <input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="比如：小王"></div>
       <div class="fld"><span class="fieldlabel">小组名字</span>
@@ -532,39 +605,75 @@ function teamDlg() {
       <div class="row"><button class="btn" data-act="create-go">${busy ? '正在创建…' : '创建小组'}</button>
         <button class="btn out" data-act="close">取消</button></div>
       <hr style="margin:20px 0;border:0;border-top:1px solid var(--line)">
-      <div class="fld"><span class="fieldlabel">或者，粘贴搭子发来的链接</span>
-        <input data-f="invite" placeholder="https://…/#g=…&k=…"></div>
-      <button class="btn out" data-act="join-go">加入这个小组</button>`;
+      <div class="fld"><span class="fieldlabel">或者，粘贴搭子发来的邀请链接</span>
+        <input data-f="invite" placeholder="https://…/#g=…&i=…"></div>
+      <div class="row"><button class="btn out" data-act="join-go">加入这个小组</button>
+        <button class="textbtn" data-act="transfer-redeem" style="color:var(--primary)">我有换设备码</button></div>`;
   }
-  const url = `${location.origin}${location.pathname}#g=${me.gid}&k=${me.key}`;
-  let qr = '';
-  try { qr = qrSvg(url, { size: 190 }); } catch { qr = '<p class="small">链接太长，生成不了二维码，直接发链接吧。</p>'; }
-  return `<div class="dlghead"><h3>邀请搭子进来</h3></div>
-    <p class="small">扫码或点链接就能加入，不用注册。<strong>这个页面随时能再打开</strong> —— 每一页顶部都有「邀请 / 二维码」按钮。</p>
-    <div style="text-align:center;margin:14px 0"><div class="qrbox">${qr}</div></div>
-    <div class="linkbox"><input readonly value="${esc(url)}" aria-label="邀请链接" onclick="this.select()">
-      <button class="btn sm" data-act="copy" data-url="${esc(url)}">复制</button></div>
-    <div class="tip warn">这条链接就是钥匙 —— <strong>拿到的人不用登录就能编辑全部内容</strong>。只发给同行的搭子，别发到大群或朋友圈。</div>
-    <hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
-    <h3 style="font-size:16px;margin-bottom:8px">${esc(cloud.group.name)}</h3>
-    <div class="fld"><span class="fieldlabel">成员（共 ${(cloud.members || []).length} 人）</span>
-      ${(cloud.members || []).map(m => `<div class="memberrow">
+  if (cloud.pending || cloud.ownerSetupNeeded) return `<div class="dlghead"><h3>${esc(cloud.group.name)}</h3></div>
+    <p class="small">${cloud.pending ? '等组长同意后这里才会有内容。' : '组长身份待激活。'}</p>
+    <div class="row"><button class="btn out" data-act="transfer-redeem">我有换设备码</button>
+      <button class="btn out" data-act="leave">在这台设备上退出</button></div>`;
+
+  const g = cloud.group, ms = cloud.members || [], owner = isOwner();
+  const fmtSeen = t => t ? new Date(t).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  let html = '';
+
+  if (owner) {
+    const url = `${location.origin}${location.pathname}#g=${g.id}&i=${g.invite_code}`;
+    let qr = ''; try { qr = qrSvg(url, { size: 190 }); } catch { qr = '<p class="small">链接太长，直接发链接吧。</p>'; }
+    html += `<div class="dlghead"><h3>邀请搭子进来</h3></div>
+      <p class="small">扫码或点链接，填名字就能加入。<strong>这个页面随时能再打开</strong> —— 每一页顶部都有「邀请 / 二维码」。</p>
+      <div style="text-align:center;margin:14px 0"><div class="qrbox">${qr}</div></div>
+      <div class="linkbox"><input readonly value="${esc(url)}" aria-label="邀请链接" onclick="this.select()">
+        <button class="btn sm" data-act="copy" data-url="${esc(url)}">复制</button></div>
+      <div class="row" style="margin:10px 0 4px;gap:14px;align-items:center">
+        <label class="row" style="gap:8px;font-size:14px"><input type="checkbox" data-act="approval-toggle"${g.approval ? ' checked' : ''} style="width:22px;height:22px;min-height:0">
+          新人入组要我同意</label>
+        <button class="textbtn" data-act="invite-rotate" style="color:var(--warn)">换一条新链接</button></div>
+      <p class="small">换链接后旧的二维码立刻作废，已经在组里的人不受影响。有人退出、或怀疑链接流出去了，就换一条。</p>`;
+    if ((cloud.pendingMembers || []).length) {
+      html += `<hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
+        <div class="fld"><span class="fieldlabel" style="color:var(--warn)">等你同意（${cloud.pendingMembers.length}）</span>
+        ${cloud.pendingMembers.map(m => `<div class="memberrow">
+          <span class="avatar">${esc(initials(m.name))}</span><span class="mname">${esc(m.name)}</span>
+          <button class="btn sm" data-act="member-approve" data-mid="${esc(m.member_id)}">同意</button>
+          <button class="btn sm out" data-act="member-reject" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}">拒绝</button>
+        </div>`).join('')}</div>`;
+    }
+  } else {
+    html += `<div class="dlghead"><h3>${esc(g.name)}</h3></div>
+      <p class="small">邀请新人由组长来发。你在这个组里是<strong>${ROLE_NAME[cloud.me.role]}</strong>。</p>`;
+  }
+
+  html += `<hr style="margin:18px 0;border:0;border-top:1px solid var(--line)">
+    <div class="fld"><span class="fieldlabel">成员（${ms.length} 人）</span>
+    ${ms.map(m => {
+      const self = m.member_id === cloud.me.member_id;
+      return `<div class="memberrow">
         <span class="avatar">${esc(initials(m.name))}</span>
-        <span class="mname">${esc(m.name)}${m.member_id === me.id ? ' · 这台设备' : ''}</span>
-        ${m.member_id === me.id ? '' : `
-          <button class="textbtn" data-act="claim" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}">这也是我</button>
-          <button class="iconbtn" data-act="member-del" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}" aria-label="移除 ${esc(m.name)}">🗑</button>`}
-      </div>`).join('')}
-      <p class="small" style="margin-top:8px">换了设备重复进组的，点「这也是我」把这台设备并过去；多出来的空身份可以直接移除。</p>
+        <span class="mname">${esc(m.name)}${self ? ' · 我' : ''}<br><span class="small">${m.role === 'owner' ? '组长' : ''}${m.seen_at ? (m.role === 'owner' ? ' · ' : '') + '最近 ' + fmtSeen(m.seen_at) : ''}</span></span>
+        ${owner && !self && m.role !== 'owner' ? `
+          <select data-act="member-role" data-mid="${esc(m.member_id)}" style="width:auto;min-height:36px;padding:6px 26px 6px 10px;font-size:13px">
+            <option value="editor"${m.role === 'editor' ? ' selected' : ''}>可编辑</option>
+            <option value="viewer"${m.role === 'viewer' ? ' selected' : ''}>只读</option></select>
+          <button class="iconbtn" data-act="member-remove" data-mid="${esc(m.member_id)}" data-name="${esc(m.name)}" aria-label="移除 ${esc(m.name)}">🗑</button>`
+          : !owner || self ? '' : `<span class="chip plain">${ROLE_NAME[m.role]}</span>`}
+      </div>`;
+    }).join('')}
+    ${owner ? `<p class="small" style="margin-top:8px">移除后他的钥匙当场作废，拿着旧链接也进不来；他改过的内容会留着。移除之后记得<strong>换一条新链接</strong>。</p>` : ''}
     </div>
     <div class="fld"><span class="fieldlabel">你的显示名</span>
-      <div class="linkbox"><input data-f="who" value="${esc(me.name)}" maxlength="24" placeholder="给搭子看的名字">
+      <div class="linkbox"><input data-f="who" value="${esc(cloud.me.name)}" maxlength="24">
         <button class="btn sm out" data-act="rename-me">改名</button></div></div>
-    <div class="fld"><span class="fieldlabel">小组名字</span>
-      <div class="linkbox"><input data-f="gname" value="${esc(cloud.group.name)}" maxlength="60">
-        <button class="btn sm out" data-act="rename-group">保存</button></div></div>
-    <p class="small">数据存在云端，换手机、清缓存都不会丢。退出这台设备只是本机不再自动打开这个小组，内容不受影响。</p>
-    <button class="btn out" data-act="leave">在这台设备上退出小组</button>`;
+    ${owner ? `<div class="fld"><span class="fieldlabel">小组名字</span>
+      <div class="linkbox"><input data-f="gname" value="${esc(g.name)}" maxlength="60">
+        <button class="btn sm out" data-act="rename-group">保存</button></div></div>` : ''}
+    <div class="row" style="margin-top:6px;gap:10px">
+      <button class="btn out" data-act="transfer-create">📱 换设备</button>
+      <button class="btn out" data-act="leave">在这台设备上退出</button></div>
+    <p class="small" style="margin-top:10px">换设备：在新手机或电脑上继续用你这个身份。退出：只是这台设备不再自动打开，云端内容不受影响。</p>`;
+  return html;
 }
 
 /* ================= 事件 ================= */
@@ -592,6 +701,7 @@ function captureDraft(root) {
     icon: $('[data-f="icon"]', root)?.value ?? editing.draft?.icon ?? '📌',
     layout: $('[data-f="layout"]', root)?.value ?? editing.draft?.layout ?? editing.mod?.layout ?? 'card',
     hidden: $('[data-f="hidden"]', root)?.checked ?? editing.draft?.hidden ?? !!editing.mod?.hidden,
+    locked: $('[data-f="locked"]', root)?.checked ?? editing.draft?.locked ?? !!editing.mod?.locked,
     groupBy: $('[data-f="groupBy"]', root)?.value ?? editing.draft?.groupBy ?? editing.mod?.group_by ?? ''
   };
 }
@@ -632,62 +742,83 @@ document.addEventListener('click', async e => {
       case 'trash-off': trashMode = false; paint(); break;
 
       /* 建组 / 加入 */
-      case 'create': case 'join-manual': case 'invite': openDlg(teamDlg()); break;
+      case 'create': case 'join-manual': case 'invite': case 'team': openDlg(teamDlg()); break;
       case 'create-go': {
         const who = readF(root, 'who') || '发起人', name = readF(root, 'name') || '我们的旅行';
         me.name = who; LS.set('idn.name', who);
         busy = true; paint(); openDlg(teamDlg());
-        const r = await fetch('./api/travel', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'create', name, who, member: me.id })
-        }).then(x => x.json());
+        let r;
+        try { r = await api({ action: 'create', name, who, member: me.id }, { auth: false }); }
+        catch (er) { busy = false; toast(er.message); openDlg(teamDlg()); break; }
         busy = false;
-        if (r.error) { toast(r.error); openDlg(teamDlg()); break; }
-        me.gid = r.group; me.key = r.secret;
-        LS.set('idn.gid', r.group); LS.set('idn.key.' + r.group, r.secret);
+        saveToken(r.group, r.token);
         await pull(); tab = 'overview'; paint(); openDlg(teamDlg());
-        toast('小组建好了，把二维码发给搭子');
+        toast('小组建好了，你是组长。把二维码发给搭子');
         break;
       }
       case 'join-go': {
         const v = readF(root, 'invite');
-        let g = '', k = '';
-        try { const h = new URLSearchParams(new URL(v).hash.slice(1)); g = h.get('g'); k = h.get('k'); } catch {}
-        if (!g || !k) { toast('这条链接不对，要带 #g= 和 #k= 那一串'); break; }
-        me.gid = g; me.key = k;
-        LS.set('idn.gid', g); LS.set('idn.key.' + g, k);
-        try { await pull(); } catch (er) { toast(er.message); break; }
-        openDlg(joinDlg());
-        break;
-      }
-      /* 认领已有身份：把本机的 member id 换成对方的，两台设备从此算同一个人 */
-      case 'claim': {
-        const mid = b.dataset.mid, nm = b.dataset.name;
-        me.id = mid; LS.set('idn.member', mid);
-        me.name = nm; LS.set('idn.name', nm);
-        await act({ action: 'join' }, { keepDialog: true });
-        closeDlg(); tab = 'overview'; paint();
-        toast(`这台设备现在是「${nm}」了`);
-        break;
-      }
-      case 'member-del': {
-        if (!confirm(`把「${b.dataset.name}」从成员里移除？\n他已经改过的内容会留着，只是不再显示在成员列表里。`)) break;
-        await act({ action: 'memberRemove', target: b.dataset.mid }, { keepDialog: true });
-        openDlg(teamDlg());
+        let g = '', i = '';
+        try { const h = new URLSearchParams(new URL(v).hash.slice(1)); g = h.get('g'); i = h.get('i'); } catch {}
+        if (!g || !i) { toast('这条链接不对，要带 #g= 和 &i= 那一串'); break; }
+        pendingInvite = { gid: g, code: i };
+        await startInvite();
         break;
       }
       case 'join-confirm': {
         const who = readF(root, 'who');
         if (!who) { toast('填个名字吧，随便什么都行'); break; }
+        if (!pendingInvite) { toast('邀请信息丢了，重新打开链接'); break; }
         me.name = who; LS.set('idn.name', who);
-        await act({ action: 'join' }, { keepDialog: true });
-        closeDlg(); tab = 'overview'; paint();
-        toast(`欢迎，${who}`);
+        busy = true; openDlg(joinDlg(editing?.inviteInfo || { name: '', ownerName: '组长' }));
+        let r;
+        try { r = await api({ action: 'join', group: pendingInvite.gid, invite: pendingInvite.code, who, member: me.id }, { auth: false }); }
+        catch (er) { busy = false; toast(er.message); break; }
+        busy = false;
+        saveToken(pendingInvite.gid, r.token); pendingInvite = null;
+        await pull(); closeDlg(); tab = 'overview'; paint();
+        toast(r.status === 'pending' ? '已申请，等组长同意' : `欢迎，${who}`);
         break;
       }
+      /* 换设备 */
+      case 'transfer-create': {
+        const r = await api({ action: 'transferCreate' });
+        openDlg(transferDlg(r.code, r.expires_at));
+        break;
+      }
+      case 'transfer-redeem': openDlg(transferDlg()); break;
+      case 'transfer-go': {
+        const code = readF(root, 'code').replace(/\D/g, '');
+        if (code.length !== 8) { toast('换设备码是 8 位数字'); break; }
+        busy = true; openDlg(transferDlg());
+        let r;
+        try { r = await api({ action: 'transferRedeem', code }, { auth: false }); }
+        catch (er) { busy = false; toast(er.message); openDlg(transferDlg()); break; }
+        busy = false;
+        me.id = r.member; LS.set('idn.member', r.member);
+        me.name = r.name; LS.set('idn.name', r.name);
+        saveToken(r.group, r.token); pendingInvite = null; pendingTransfer = '';
+        await pull(); closeDlg(); tab = 'overview'; paint();
+        toast(`这台设备现在是「${r.name}」了`);
+        break;
+      }
+      /* 组长：成员管理 */
+      case 'member-approve':
+        await act({ action: 'memberApprove', target: b.dataset.mid }, { keepDialog: true }); openDlg(teamDlg()); toast('已同意'); break;
+      case 'member-reject':
+        if (!confirm(`拒绝「${b.dataset.name}」加入？`)) break;
+        await act({ action: 'memberReject', target: b.dataset.mid }, { keepDialog: true }); openDlg(teamDlg()); break;
+      case 'member-remove':
+        if (!confirm(`把「${b.dataset.name}」移出小组？\n他的钥匙会立刻作废，拿旧链接也进不来。他改过的内容会留着。`)) break;
+        await act({ action: 'memberRemove', target: b.dataset.mid }, { keepDialog: true }); openDlg(teamDlg());
+        toast('已移除。建议顺手换一条新链接'); break;
+      case 'invite-rotate':
+        if (!confirm('换一条新邀请链接？旧的二维码立刻作废，已在组里的人不受影响。')) break;
+        await act({ action: 'inviteRotate' }, { keepDialog: true }); openDlg(teamDlg()); toast('链接已更换，记得重新发二维码'); break;
       case 'leave':
         if (confirm('只是这台设备不再自动打开这个小组，云端内容不会删。确定吗？')) {
-          LS.set('idn.gid', ''); me.gid = ''; me.key = ''; cloud = null; closeDlg(); paint();
+          LS.set('idn.gid', ''); LS.set('idn.tok.' + me.gid, ''); LS.set('idn.key.' + me.gid, '');
+          me.gid = ''; me.token = ''; me.legacyKey = ''; cloud = null; pendingInvite = null; closeDlg(); paint();
         }
         break;
       case 'copy': {
@@ -712,10 +843,11 @@ document.addEventListener('click', async e => {
         }
         break;
       }
-      case 'rename-me':
-        me.name = readF(root, 'who') || '搭子'; LS.set('idn.name', me.name);
-        await act({ action: 'join' }, { keepDialog: true }); openDlg(teamDlg()); toast('改好了');
+      case 'rename-me': {
+        const name = readF(root, 'who'); if (!name) { toast('名字不能为空'); break; }
+        await act({ action: 'renameMe', name }, { keepDialog: true }); openDlg(teamDlg()); toast('改好了');
         break;
+      }
       case 'rename-group':
         await act({ action: 'rename', name: readF(root, 'gname') }, { keepDialog: true });
         openDlg(teamDlg()); break;
@@ -756,6 +888,17 @@ document.addEventListener('click', async e => {
         }
         break;
       }
+      case 'history': {
+        const en = cloud.entries.find(x => x.id === id);
+        const r = await api({ action: 'entryHistory', id });
+        openDlg(historyDlg(en, r.history));
+        break;
+      }
+      case 'revert':
+        if (!confirm('恢复到这一版？当前版本也会存进历史，随时能再回来。')) break;
+        await act({ action: 'entryRevert', id, to: +b.dataset.to });
+        closeDlg(); paint(); toast('已恢复');
+        break;
       case 'entry-del':
         if (confirm('移入回收站？可以再恢复。')) {
           await act({ action: 'entryDelete', id, version: +b.dataset.v });
@@ -795,6 +938,7 @@ document.addEventListener('click', async e => {
           name, icon: readF(root, 'icon') || '📌',
           layout: m ? m.layout : ($('[data-f="layout"]', root)?.value || 'card'),
           hidden: m ? $('[data-f="hidden"]', root)?.checked : false,
+          locked: !!$('[data-f="locked"]', root)?.checked,
           groupBy: $('[data-f="groupBy"]', root)?.value || '',
           fields
         });
@@ -823,6 +967,10 @@ document.addEventListener('change', e => {
 });
 
 document.addEventListener('change', async e => {
+  const ap = e.target.closest('[data-act="approval-toggle"]');
+  if (ap) { try { await act({ action: 'approvalSet', on: ap.checked }, { keepDialog: true }); openDlg(teamDlg()); } catch {} return; }
+  const rl = e.target.closest('[data-act="member-role"]');
+  if (rl) { try { await act({ action: 'memberRole', target: rl.dataset.mid, role: rl.value }, { keepDialog: true }); openDlg(teamDlg()); toast('已更新'); } catch {} return; }
   const cb = e.target.closest('[data-act="toggle"]');
   if (!cb) return;
   const en = cloud.entries.find(x => x.id === cb.dataset.id);
@@ -862,7 +1010,7 @@ $('#dlg').addEventListener('close', () => { editing = null; });
 
 /* 每 15 秒拉一次，编辑中和后台标签页不打扰 */
 const sync = () => {
-  if (!cloud || busy || editing || document.visibilityState !== 'visible') return;
+  if (!cloud || busy || (editing && !cloud.pending) || document.visibilityState !== 'visible') return;
   pull().then(paint).catch(err => { netError = err.message; paint(); });
 };
 setInterval(sync, 15000);
@@ -870,19 +1018,35 @@ setInterval(sync, 15000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); });
 window.addEventListener('online', sync);
 
+/* 邀请流程：先拉预览（组名、组长、要不要审批），再问名字 */
+async function startInvite() {
+  const { gid, code } = pendingInvite;
+  const r = await fetch(`./api/travel?g=${encodeURIComponent(gid)}&i=${encodeURIComponent(code)}`, { cache: 'no-store' });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.error || '邀请链接无效'); pendingInvite = null; return; }
+  // 已经是这个组的成员（比如自己点了自己的二维码）就直接进
+  if (LS.get('idn.tok.' + gid)) { loadGroup(gid); pendingInvite = null;
+    try { await pull(); tab = 'overview'; paint(); return; } catch {} }
+  editing = { mode: 'join', inviteInfo: d.invite };
+  paint(); openDlg(joinDlg(d.invite));
+}
+
 /* 启动 */
 (async () => {
   paint();
-  if (me.gid && me.key) {
-    try {
-      await pull();
-      // 第一次点开邀请链接：先问名字再入组，别自作主张替人取名
-      if (!(cloud.members || []).some(m => m.member_id === me.id)) {
-        paint();
-        openDlg(joinDlg());
-        return;
+  if (pendingTransfer) { openDlg(transferDlg()); $('[data-f="code"]').value = pendingTransfer; return; }
+  if (pendingInvite) { await startInvite(); return; }
+  if (me.gid && authKey()) {
+    try { await pull(); }
+    catch (err) {
+      netError = err.message;
+      // 钥匙失效（被移除 / 链接换过）：清掉本机记录，回到落地页
+      if (/失效|换过|重新进组|不在小组/.test(err.message)) {
+        LS.set('idn.gid', ''); LS.set('idn.tok.' + me.gid, ''); LS.set('idn.key.' + me.gid, '');
+        me.gid = ''; me.token = ''; me.legacyKey = ''; cloud = null;
+        toast(err.message);
       }
-    } catch (err) { netError = err.message; }
+    }
   }
   paint();
 })();

@@ -196,3 +196,11 @@ html[data-theme="dark"] .avatar{color:#0d2b33}
 .memberrow .avatar{margin-left:0;flex:0 0 auto}
 .memberrow .mname{flex:1;min-width:0;font-size:14.5px;overflow-wrap:anywhere}
 .memberrow .textbtn{flex:0 0 auto;font-size:13px}
+
+/* B 方案：换设备码、历史记录 */
+.codebig{font-size:34px;font-weight:700;letter-spacing:6px;text-align:center;font-variant-numeric:tabular-nums;
+  color:var(--primary);background:var(--primary-soft);border-radius:12px;padding:14px;margin:12px 0}
+.hist{border:1px solid var(--line);border-radius:10px;padding:12px;margin:10px 0}
+.histhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.histbody{font-size:14px;margin-bottom:10px}
+.histbody .meta{margin-top:2px}
