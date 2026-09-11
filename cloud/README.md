@@ -31,7 +31,7 @@ Cloudflare 控制台 → **Storage & Databases → D1** → **Create**，
 ### 3. 部署
 
 ```bash
-cd cloud && npx wrangler deploy
+cd cloud && ./deploy.sh
 ```
 
 数据库绑定写在 `wrangler.toml` 里，不用在控制台配 —— 而且**只要这个文件存在，

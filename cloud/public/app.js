@@ -9,8 +9,8 @@
  * 邀请链接 #g=…&i=… 只带邀请码；换设备用 #t=… 的 8 位数字码。
  * 旧版 #g=…&k=… 链接过渡期内仍能读，读一次就自动换发个人钥匙。
  */
-import { qrSvg } from './qr.js';
-import { DAYS, ESSENTIALS, PINS, TOP10 } from './seed.js';
+import { qrSvg } from './qr.js?v=20260911115623';
+import { DAYS, ESSENTIALS, PINS, TOP10 } from './seed.js?v=20260911115623';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -29,6 +29,7 @@ if (!me.id) { me.id = uid(); LS.set('idn.member', me.id); }
 /* 从地址栏拿到但还没处理的东西 */
 let pendingInvite = null;    // {gid, code}   扫了邀请码，等填名字
 let pendingTransfer = '';    // 8 位换设备码
+let rotatedFlash = false;    // 刚换过链接，弹窗里高亮一下链接框
 
 let cloud = null;                 // {group, me, members, pending, modules, entries}
 let tab = 'overview';
@@ -625,8 +626,9 @@ function teamDlg() {
     html += `<div class="dlghead"><h3>邀请搭子进来</h3></div>
       <p class="small">扫码或点链接，填名字就能加入。<strong>这个页面随时能再打开</strong> —— 每一页顶部都有「邀请 / 二维码」。</p>
       <div style="text-align:center;margin:14px 0"><div class="qrbox">${qr}</div></div>
-      <div class="linkbox"><input readonly value="${esc(url)}" aria-label="邀请链接" onclick="this.select()">
+      <div class="linkbox${rotatedFlash ? ' flash' : ''}"><input readonly value="${esc(url)}" aria-label="邀请链接" onclick="this.select()">
         <button class="btn sm" data-act="copy" data-url="${esc(url)}">复制</button></div>
+      <p class="small" style="margin:6px 0 0">链接编号 <code>${esc(g.invite_code.slice(-6))}</code> —— 换过链接后这串会变，方便确认发出去的是新的。</p>
       <div class="row" style="margin:10px 0 4px;gap:14px;align-items:center">
         <label class="row" style="gap:8px;font-size:14px"><input type="checkbox" data-act="approval-toggle"${g.approval ? ' checked' : ''} style="width:22px;height:22px;min-height:0">
           新人入组要我同意</label>
@@ -814,7 +816,9 @@ document.addEventListener('click', async e => {
         toast('已移除。建议顺手换一条新链接'); break;
       case 'invite-rotate':
         if (!confirm('换一条新邀请链接？旧的二维码立刻作废，已在组里的人不受影响。')) break;
-        await act({ action: 'inviteRotate' }, { keepDialog: true }); openDlg(teamDlg()); toast('链接已更换，记得重新发二维码'); break;
+        await act({ action: 'inviteRotate' }, { keepDialog: true });
+        rotatedFlash = true; openDlg(teamDlg()); rotatedFlash = false;
+        toast('链接和二维码都换新了，旧的已作废'); break;
       case 'leave':
         if (confirm('只是这台设备不再自动打开这个小组，云端内容不会删。确定吗？')) {
           LS.set('idn.gid', ''); LS.set('idn.tok.' + me.gid, ''); LS.set('idn.key.' + me.gid, '');

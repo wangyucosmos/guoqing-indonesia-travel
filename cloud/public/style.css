@@ -236,3 +236,8 @@ dialog[open]::backdrop{animation:fadeIn .24s ease}
 @media(prefers-reduced-motion:reduce){
   #main,#main.fresh *,dialog[open],dialog[open]::backdrop,.day .caret{animation:none!important;transition:none!important}
 }
+
+/* 换链接后链接框闪一下，让人看见它真的变了 */
+@keyframes flash{0%{box-shadow:0 0 0 0 rgba(13,110,126,.0)}30%{box-shadow:0 0 0 4px rgba(13,110,126,.45)}100%{box-shadow:0 0 0 0 rgba(13,110,126,0)}}
+.linkbox.flash{animation:flash 1.2s ease-out 1;border-radius:9px}
+.linkbox code{background:var(--primary-soft);color:var(--primary);padding:1px 6px;border-radius:5px;font-size:12px}
