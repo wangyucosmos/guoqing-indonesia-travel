@@ -18,3 +18,5 @@ POST `/api/travel`：create、join、rotate、add、update、delete、restore。
 公共模板：`lib/guide.ts`。校验、时区和金额函数：`lib/travel.ts`。建表：Drizzle SQL。没有用户原 PDF、机票截图、私人价格或凭据入库/入仓库。
 
 A/B 方案隔离：`modules.plan` 与 `entries.plan` 均为 `A` 或 `B`。新库默认 A；`migrate-plans.sql` 为已有 B 记录新增列并默认 B。GET `/api/travel?g=...&p=A|B` 只返回一套计划；首次读取缺失计划时按模板补建。POST 模块/记录操作携带并校验当前 plan，避免跨方案写入。`history` 仍由全局唯一 entry_id 关联。
+
+返回主站链接为纯静态页面导航，不读写用户或旅行数据，不调用 API。

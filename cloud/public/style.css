@@ -32,11 +32,22 @@ header.top{background:var(--card);border-bottom:1px solid var(--line);position:s
 .logo{font-size:17px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
 .logo small{display:block;font-size:10px;letter-spacing:2px;color:var(--muted);font-weight:500}
 .topbar .spacer{flex:1}
+.home-link{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:7px 12px;border-radius:8px;background:var(--primary);color:#fff;text-decoration:none;font-size:13px;font-weight:650;white-space:nowrap}
+html[data-theme="dark"] .home-link{color:#0d2b33}
+.home-link:hover{box-shadow:0 4px 14px rgba(13,110,126,.2)}
+.home-link:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 .ghost{border:1px solid var(--line);border-radius:8px;padding:7px 11px;font-size:13px;display:inline-flex;align-items:center;gap:5px;min-height:40px}
 .tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;border-top:1px solid var(--line)}
 .tabs::-webkit-scrollbar{display:none}
 .tabs button{flex:0 0 auto;padding:11px 13px;font-size:14.5px;color:var(--muted);border-bottom:2.5px solid transparent;white-space:nowrap}
 .tabs button[aria-selected="true"]{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+@media(max-width:420px){
+  .topbar{gap:6px}
+  .logo{font-size:15px}
+  .logo small{display:none}
+  .home-link{padding:7px 9px}
+  .ghost{padding:7px 9px}
+}
 
 /* ---------- 通用块 ---------- */
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin:12px 0}
