@@ -9,8 +9,8 @@
  * 邀请链接 #g=…&i=… 只带邀请码；换设备用 #t=… 的 8 位数字码。
  * 旧版 #g=…&k=… 链接过渡期内仍能读，读一次就自动换发个人钥匙。
  */
-import { qrSvg } from './qr.js?v=20260911115623';
-import { getPlanData, PLAN_CONFIG } from './seed.js?v=20260911115623';
+import { qrSvg } from './qr.js?v=20260914140938';
+import { getPlanData, PLAN_CONFIG } from './seed.js?v=20260914140938';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
