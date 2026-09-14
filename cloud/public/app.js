@@ -10,7 +10,7 @@
  * 旧版 #g=…&k=… 链接过渡期内仍能读，读一次就自动换发个人钥匙。
  */
 import { qrSvg } from './qr.js?v=20260911115623';
-import { DAYS, ESSENTIALS, PINS, TOP10 } from './seed.js?v=20260911115623';
+import { getPlanData, PLAN_CONFIG } from './seed.js?v=20260911115623';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -32,15 +32,18 @@ let pendingTransfer = '';    // 8 位换设备码
 let rotatedFlash = false;    // 刚换过链接，弹窗里高亮一下链接框
 
 let cloud = null;                 // {group, me, members, pending, modules, entries}
+let selectedPlan = 'A';
+const currentPlan = () => getPlanData(selectedPlan);
 let tab = 'overview';
 let busy = false, lastSync = '', netError = '';
 let editing = null;               // {mode:'entry'|'module', ...}
-let openDay = DAYS[0].date;   // 手风琴：同一时刻只展开一天
+let openDay = currentPlan().days[0].date;   // 手风琴：同一时刻只展开一天
 let filter = {};                  // moduleId -> 当前筛选值
 let trashMode = false;
 let theme = LS.get('idn.theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 
 const loadGroup = gid => {
+  selectedPlan = LS.get('idn.plan.' + gid) || (LS.get('idn.gid') === gid ? 'B' : 'A');
   me.gid = gid;
   me.token = LS.get('idn.tok.' + gid) || '';
   me.legacyKey = LS.get('idn.key.' + gid) || '';
@@ -66,7 +69,7 @@ async function api(body, { auth = true } = {}) {
   const headers = { 'Content-Type': 'application/json' };
   if (auth && authKey()) headers['X-Trip-Key'] = authKey();
   const r = await fetch('./api/travel', { method: 'POST', headers,
-    body: JSON.stringify({ ...body, group: body.group ?? me.gid }) });
+    body: JSON.stringify({ ...body, plan: body.plan ?? selectedPlan, group: body.group ?? me.gid }) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(d.error || '操作没有完成'); e.status = r.status; throw e; }
   return d;
@@ -74,7 +77,7 @@ async function api(body, { auth = true } = {}) {
 /* 拉全量。旧钥匙过渡时服务器可能顺手发一把个人钥匙，收到就存起来、丢掉旧的。 */
 async function pull() {
   if (!me.gid || !authKey()) return;
-  const q = `g=${encodeURIComponent(me.gid)}&m=${encodeURIComponent(me.id)}`;
+  const q = `g=${encodeURIComponent(me.gid)}&m=${encodeURIComponent(me.id)}&p=${encodeURIComponent(selectedPlan)}`;
   const r = await fetch(`./api/travel?${q}`, { headers: { 'X-Trip-Key': authKey() }, cache: 'no-store' });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || '读取失败');
@@ -142,11 +145,11 @@ function groupValues(m, list) {
 
 /* 日期选项：攻略里的 8 天 + 记录里出现过的其它日期 */
 function allDays() {
-  const set = new Set(DAYS.map(d => d.date));
+  const set = new Set(currentPlan().days.map(d => d.date));
   (cloud?.entries || []).forEach(e => e.day && set.add(e.day));
   return [...set].sort();
 }
-const dayTitle = d => DAYS.find(x => x.date === d)?.title || dayLabel(d);
+const dayTitle = d => currentPlan().days.find(x => x.date === d)?.title || dayLabel(d);
 
 /* ---------------- 示意地图（与静态版一致） ---------------- */
 const MX = lon => lon <= 112.7 ? (lon - 104) * 26 : lon <= 114 ? 226 + (lon - 112.7) * 48 : 288 + (lon - 114) * 81.6;
@@ -160,13 +163,13 @@ function mapSvg() {
     'M 738 166 C 778 156, 828 162, 830 176 C 830 190, 776 195, 744 190 C 726 187, 726 171, 738 166 Z',
     'M 731 186 C 741 181, 753 185, 753 192 C 753 200, 737 202, 730 196 C 725 192, 725 188, 731 186 Z'
   ];
-  const order = [0, 6, 7, 6, 4, 3, 4, 1, 2, 1, 0];
-  const path = order.map((i, k) => `${k ? 'L' : 'M'} ${MX(PINS[i].lon).toFixed(0)} ${MY(PINS[i].lat).toFixed(0)}`).join(' ');
+  const { pins, order } = currentPlan();
+  const path = order.map((i, k) => `${k ? 'L' : 'M'} ${MX(pins[i].lon).toFixed(0)} ${MY(pins[i].lat).toFixed(0)}`).join(' ');
   const LAB = { right: ['start', 12, -7, 9], left: ['end', -12, -7, 9], up: ['middle', 0, -22, -8], down: ['middle', 0, 24, 38] };
   return `<svg viewBox="0 34 862 205" role="img" aria-label="印尼行程示意地图">
     ${islands.map(d => `<path d="${d}" fill="var(--primary-soft)" stroke="var(--line)" stroke-width="1.5"/>`).join('')}
     <path d="${path}" fill="none" stroke="var(--primary)" stroke-width="2" stroke-dasharray="6 5" opacity=".6" stroke-linejoin="round"/>
-    ${PINS.map((p, i) => {
+    ${pins.map((p, i) => {
       const x = MX(p.lon), y = MY(p.lat), [an, dx, dy1, dy2] = LAB[p.pos] || LAB.right;
       return `<g class="pin" tabindex="0" role="button" data-pin="${i}" aria-label="${esc(p.n)}，${esc(p.d)}">
         <circle class="hit" cx="${x}" cy="${y}" r="22"/>
@@ -214,12 +217,18 @@ function paintTabs() {
 }
 
 /* ---------- 没建组：只读公开攻略 ---------- */
+function planSwitcher() {
+  return `<section class="plan-switcher" aria-label="旅行方案切换">${Object.values(PLAN_CONFIG).map(p => `<button class="plan-card ${p.id === selectedPlan ? 'selected' : ''}" data-act="plan-switch" data-plan="${p.id}" aria-pressed="${p.id === selectedPlan}"><strong>${p.name}</strong><span>${esc(p.subtitle)}</span><small>${esc(p.summary)}</small><em>${p.tags.map(esc).join(' · ')}</em></button>`).join('')}</section>`;
+}
+function planCompare() { return `<div class="plan-compare"><div><b>A计划</b><span>不改签 · 科莫多 1 天 · 巴厘岛约 1–1.5 天 · 布罗莫完整保留</span><small>费用更低，核心体验保留；转场更紧。</small></div><div><b>B计划</b><span>改签 · 科莫多 1 天 · 巴厘岛约 2–2.5 天 · 布罗莫完整保留</span><small>巴厘岛更从容，路线更均衡；交通成本更高。</small></div></div>`; }
 function viewLanding() {
+  const { days, essentials, name, subtitle, summary } = currentPlan();
   return `
   <section class="landing">
     <p class="eyebrow">10.01 — 10.09 / 国庆旅行计划</p>
     <h1>去山海之间，<br>把时间留给风景。</h1>
-    <p class="muted">科莫多 · 巴厘岛 / 罗威纳 · 布罗莫</p>
+    <p class="muted">${esc(name)} · ${esc(subtitle)}<br>${esc(summary)}</p>
+    ${planSwitcher()}${planCompare()}
     <div style="margin:20px 0"><button class="btn" data-act="create">建一个小组，大家一起改</button></div>
     <p class="small">建好之后会生成一条链接和二维码，发给搭子，扫码就能一起编辑。<br>不用注册，不用装 App，没有账号。</p>
     <p class="small"><button class="textbtn" data-act="join-manual" style="color:var(--primary);text-decoration:underline">已经有搭子发给你的链接？点这里</button></p>
@@ -229,7 +238,7 @@ function viewLanding() {
     <p class="swipehint">← 左右滑动看完整行程 →</p>
     <p class="maplegend">位置为示意，只表示相对方位和行程顺序，不能当导航用。</p></div>
   <div class="sec"><h2>每天怎么走</h2></div>
-  ${DAYS.map(d => `<details class="day" data-day="${d.date}"${openDay === d.date ? ' open' : ''}>
+  ${days.map(d => `<details class="day" data-day="${d.date}"${openDay === d.date ? ' open' : ''}>
     <summary><span class="date">${dayLabel(d.date)}</span>
       <span class="ttl"><strong>${esc(d.title)}</strong><small>${esc(d.tag)} · ${d.zone}</small></span>
       <span class="caret">▾</span></summary>
@@ -237,13 +246,14 @@ function viewLanding() {
       ${d.items.map(([t, h, p]) => `<time>${esc(t)}</time><div><h4>${esc(h)}</h4><p>${esc(p)}</p></div>`).join('')}
     </div></div></details>`).join('')}
   <div class="sec"><h2>少一点临时慌张</h2></div>
-  <div class="list two">${ESSENTIALS.map(e => `<div class="item"><h4>${esc(e.t)}</h4>
+  <div class="list two">${essentials.map(e => `<div class="item"><h4>${esc(e.t)}</h4>
     <p style="font-size:14px;color:var(--muted)">${esc(e.x)}</p></div>`).join('')}</div>
   ${foot()}`;
 }
 
 /* ---------- 总览 ---------- */
 function viewOverview() {
+  const { name, subtitle, summary } = currentPlan();
   const route = (cloud.modules || []).find(m => m.builtin === 'route');
   const items = route ? entriesOf(route.id) : [];
   const byDay = {};
@@ -253,8 +263,9 @@ function viewOverview() {
   ${cloudbar()}
   <section class="hero">
     <p class="eyebrow">10.01 — 10.09 / 国庆旅行计划</p>
-    <h1>去山海之间，把时间留给风景。</h1>
-    <p class="sub">科莫多 · 巴厘岛 / 罗威纳 · 布罗莫</p>
+    <h1>${esc(name)}｜去山海之间</h1>
+    <p class="sub">${esc(subtitle)} · ${esc(summary)}</p>
+    ${planSwitcher()}${planCompare()}
   </section>
   <div class="mapwrap"><div class="mapscroll">${mapSvg()}</div>
     <p class="swipehint">← 左右滑动看完整行程 →</p>
@@ -405,7 +416,7 @@ function cardLayout(m, list) {
       <div class="ov"><span>记录数</span><strong>${list.length}</strong></div></div>
       <div class="tip">标成「仅自己可见」的记录只有你能看到，队友看不到，也不计入他们的汇总。汇率手动填。</div>` + extra;
   }
-  if (m.builtin === 'music') extra = `<div class="tip">只存 10 首的话：${TOP10.join(' / ')}</div>` + extra;
+  if (m.builtin === 'music') extra = `<div class="tip">只存 10 首的话：${currentPlan().top10.join(' / ')}</div>` + extra;
   if (!shown.length) return extra + `<div class="empty"><h3>还没有内容</h3><p>${canEdit(m) ? '点右上角「添加」。' : ''}</p></div>`;
   return extra + `<div class="list two">${shown.map(e => `<div class="item">
     <div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -428,7 +439,8 @@ function cardLayout(m, list) {
 }
 
 const foot = () => `<footer class="foot">
-  国庆印尼旅游 · 内容基于 V9 方案 B · 2026<br>
+  国庆印尼旅游 · ${esc(currentPlan().name)} · 2026<br>
+  <a href="https://cosmoswong.com/">← 返回主站</a><br>
   航班、签证政策、海况请在出发前 72 小时再核对一次。<br>
   ${cloud ? '别在这里放证件号、卡号这类敏感信息。' : ''}
 </footer>`;
@@ -436,6 +448,53 @@ const foot = () => `<footer class="foot">
 /* ================= 弹窗 ================= */
 const openDlg = html => { $('#dlgBody').innerHTML = html; if (!$('#dlg').open) $('#dlg').showModal(); };
 const closeDlg = () => { editing = null; $('#dlg').close(); };
+
+async function readPlanSnapshot(id) {
+  const r = await fetch(`./api/travel?g=${encodeURIComponent(me.gid)}&m=${encodeURIComponent(me.id)}&p=${encodeURIComponent(id)}`, { headers: { 'X-Trip-Key': authKey() }, cache: 'no-store' });
+  const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || '导出读取失败'); return d;
+}
+function downloadJson(value, name) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json;charset=utf-8' }));
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function exportPlans() {
+  const [a, b] = await Promise.all([readPlanSnapshot('A'), readPlanSnapshot('B')]);
+  downloadJson({ schemaVersion: 2, selectedPlan, exportedAt: new Date().toISOString(), plans: { A: { modules: a.modules, entries: a.entries }, B: { modules: b.modules, entries: b.entries } } }, '国庆印尼旅行计划-A-B.json');
+}
+async function importPlanEntries(plan, snapshot) {
+  if (!snapshot) return;
+  const previous = selectedPlan; selectedPlan = plan;
+  await pull();
+  const byBuiltin = Object.fromEntries((cloud.modules || []).filter(m => m.builtin).map(m => [m.builtin, m.id]));
+  const byOld = {};
+  for (const mod of snapshot.modules || []) {
+    if (mod.builtin && byBuiltin[mod.builtin]) { byOld[mod.id] = byBuiltin[mod.builtin]; continue; }
+    const created = await api({ action: 'moduleAdd', name: mod.name || '导入模块', icon: mod.icon || '📌', layout: mod.layout || 'card', fields: mod.fields || [], groupBy: mod.group_by || '', locked: !!mod.locked });
+    byOld[mod.id] = created.id;
+  }
+  for (const en of snapshot.entries || []) {
+    const module = byOld[en.module_id]; if (!module) continue;
+    await api({ action: 'entryAdd', module, title: en.title || '', data: en.data || {}, day: en.day || '', scope: en.scope === 'private' ? 'private' : 'group', sort: en.sort || 0 });
+  }
+  selectedPlan = previous;
+}
+async function importPlans(file) {
+  const raw = JSON.parse(await file.text());
+  if (!confirm('导入会把记录追加进当前小组，不会删除 A 或 B 现有内容。继续吗？')) return;
+  if (raw?.plans) { await importPlanEntries('A', raw.plans.A); await importPlanEntries('B', raw.plans.B); }
+  else { // 旧单计划 JSON：按旧版 B 导入，且不触碰 A
+    const legacy = { modules: [], entries: [] };
+    const builtins = { routes: 'route', pack: 'pack', flights: 'flight', budget: 'budget', notes: 'note' };
+    for (const [key, builtin] of Object.entries(builtins)) legacy.modules.push({ id: builtin, builtin });
+    Object.entries(raw.routes || {}).forEach(([day, list]) => (list || []).forEach(x => legacy.entries.push({ module_id:'route', title:x.title || '', day, data:{ start:x.start || '', end:x.end || '', label:x.label || '', notes:x.notes || '' } })));
+    (raw.pack || []).forEach(x => legacy.entries.push({ module_id:'pack', title:x.title || '', day:x.day || '', data:{ cat:x.cat || '自定义', notes:x.notes || '', done:x.done ? '1' : '' } }));
+    (raw.flights || []).forEach(x => legacy.entries.push({ module_id:'flight', title:x.title || '', data:{ who:x.who || '', from:x.from || '', to:x.to || '', no:x.no || '', dep:x.dep || '', arr:x.arr || '', status:x.status || '待预订', notes:x.note || x.notes || '' } }));
+    (raw.budget || []).forEach(x => legacy.entries.push({ module_id:'budget', title:x.title || '', data:x }));
+    (raw.notes || []).forEach(x => legacy.entries.push({ module_id:'note', title:x.title || '', data:{ notes:x.notes || x.text || '', url:x.url || '' } }));
+    await importPlanEntries('B', legacy);
+  }
+  await pull(); paint(); toast('导入完成，原有内容仍保留');
+}
 
 function timeSel(name, v) {
   const [h, m] = (v || '').split(':');
@@ -673,6 +732,9 @@ function teamDlg() {
         <button class="btn sm out" data-act="rename-group">保存</button></div></div>` : ''}
     <div class="row" style="margin-top:6px;gap:10px">
       <button class="btn out" data-act="transfer-create">📱 换设备</button>
+      <button class="btn out" data-act="export-json">导出 A/B JSON</button>
+      <button class="btn out" data-act="import-json">导入 JSON</button>
+      <input class="sronly" id="jsonFile" type="file" accept="application/json,.json">
       <button class="btn out" data-act="leave">在这台设备上退出</button></div>
     <p class="small" style="margin-top:10px">换设备：在新手机或电脑上继续用你这个身份。退出：只是这台设备不再自动打开，云端内容不受影响。</p>`;
   return html;
@@ -722,7 +784,7 @@ function collectFields(root) {
 document.addEventListener('click', async e => {
   const pin = e.target.closest('.pin');
   if (pin && cloud) {
-    const d = PINS[+pin.dataset.pin].d.match(/\d{2}\/\d{2}/);
+    const d = currentPlan().pins[+pin.dataset.pin].d.match(/\d{2}\/\d{2}/);
     if (d) {
       const date = `2026-${d[0].replace('/', '-')}`;
       openDay = date; tab = 'overview'; paint();
@@ -736,6 +798,13 @@ document.addEventListener('click', async e => {
 
   try {
     switch (a) {
+      case 'plan-switch': {
+        const next = b.dataset.plan; if (!PLAN_CONFIG[next] || next === selectedPlan) break;
+        selectedPlan = next; if (me.gid) LS.set('idn.plan.' + me.gid, selectedPlan); openDay = currentPlan().days[0].date; tab = 'overview';
+        if (cloud) await pull(); paint(); break;
+      }
+      case 'export-json': await exportPlans(); toast('已导出 A/B 计划 JSON'); break;
+      case 'import-json': $('#jsonFile')?.click(); break;
       case 'close': closeDlg(); paint(); break;
       case 'refresh': await pull().catch(err => netError = err.message); paint(); break;
       case 'goto': tab = id; paint(); break;
@@ -753,6 +822,7 @@ document.addEventListener('click', async e => {
         try { r = await api({ action: 'create', name, who, member: me.id }, { auth: false }); }
         catch (er) { busy = false; toast(er.message); openDlg(teamDlg()); break; }
         busy = false;
+        selectedPlan = 'A'; LS.set('idn.plan.' + r.group, selectedPlan);
         saveToken(r.group, r.token);
         await pull(); tab = 'overview'; paint(); openDlg(teamDlg());
         toast('小组建好了，你是组长。把二维码发给搭子');
@@ -971,6 +1041,7 @@ document.addEventListener('change', e => {
 });
 
 document.addEventListener('change', async e => {
+  if (e.target.id === 'jsonFile' && e.target.files?.[0]) { try { await importPlans(e.target.files[0]); } catch { toast('JSON 文件无法读取或内容不完整'); } e.target.value = ''; return; }
   const ap = e.target.closest('[data-act="approval-toggle"]');
   if (ap) { try { await act({ action: 'approvalSet', on: ap.checked }, { keepDialog: true }); openDlg(teamDlg()); } catch {} return; }
   const rl = e.target.closest('[data-act="member-role"]');

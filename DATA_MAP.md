@@ -16,3 +16,5 @@ POST `/api/travel`：create、join、rotate、add、update、delete、restore。
 权威认证在 Sites 边缘层完成，应用使用官方 auth add-on 读取受信身份头。生产 Worker 不应绕过 Sites 直接对外开放。本地 API 测试使用本地模拟身份，不证明真实账号登录已人工验收。
 
 公共模板：`lib/guide.ts`。校验、时区和金额函数：`lib/travel.ts`。建表：Drizzle SQL。没有用户原 PDF、机票截图、私人价格或凭据入库/入仓库。
+
+A/B 方案隔离：`modules.plan` 与 `entries.plan` 均为 `A` 或 `B`。新库默认 A；`migrate-plans.sql` 为已有 B 记录新增列并默认 B。GET `/api/travel?g=...&p=A|B` 只返回一套计划；首次读取缺失计划时按模板补建。POST 模块/记录操作携带并校验当前 plan，避免跨方案写入。`history` 仍由全局唯一 entry_id 关联。

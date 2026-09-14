@@ -14,7 +14,10 @@
  * 已有成员用旧钥匙读取时自动换发个人钥匙；组长身份只能通过设置码激活，不走这条路。
  */
 
-import { DAYS, ESSENTIALS, MUSIC, FLIGHTS, PACK } from './seed.js';
+import { getPlanData } from './seed.js';
+
+const PLAN_IDS = ['A', 'B'];
+const planId = value => PLAN_IDS.includes(value) ? value : 'A';
 
 const J = (data, status = 200) =>
   Response.json(data, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
@@ -62,20 +65,21 @@ const BUILTIN = [
     F('notes', '内容', 'textarea'), F('url', '参考链接', 'url')] }
 ];
 
-function seedStatements(db, gid, mid, who, t) {
+function seedStatements(db, gid, mid, who, t, plan) {
+  const { days: DAYS, essentials: ESSENTIALS, music: MUSIC, flights: FLIGHTS, pack: PACK } = getPlanData(plan);
   const st = [], modIds = {};
   BUILTIN.forEach((m, i) => {
     const id = uid(); modIds[m.builtin] = id;
     st.push(db.prepare(
-      `INSERT INTO modules (id,group_id,name,icon,layout,fields,group_by,locked,sort,builtin,hidden,version,updated_at,updated_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,0,1,?,?)`
-    ).bind(id, gid, m.name, m.icon, m.layout, JSON.stringify(m.fields), m.groupBy || '', m.locked || 0,
+      `INSERT INTO modules (id,group_id,plan,name,icon,layout,fields,group_by,locked,sort,builtin,hidden,version,updated_at,updated_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,0,1,?,?)`
+    ).bind(id, gid, plan, m.name, m.icon, m.layout, JSON.stringify(m.fields), m.groupBy || '', m.locked || 0,
            (i + 1) * 100, m.builtin, t, who));
   });
   const entry = (modKey, title, data, day = '', sort = 0) => st.push(db.prepare(
-    `INSERT INTO entries (id,group_id,module_id,title,data,scope,owner,day,sort,version,updated_at,updated_by,deleted)
-     VALUES (?,?,?,?,?,'group',?,?,?,1,?,?,0)`
-  ).bind(uid(), gid, modIds[modKey], title, JSON.stringify(data), mid, day, sort, t, who));
+    `INSERT INTO entries (id,group_id,plan,module_id,title,data,scope,owner,day,sort,version,updated_at,updated_by,deleted)
+     VALUES (?,?,?,?,?,?,'group',?,?,?,1,?,?,0)`
+  ).bind(uid(), gid, plan, modIds[modKey], title, JSON.stringify(data), mid, day, sort, t, who));
   DAYS.forEach(d => d.items.forEach(([time, title, note], n) => {
     const range = /^(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})$/.exec(time);
     const one = /^(\d{1,2}:\d{2})$/.exec(time);
@@ -139,6 +143,7 @@ export async function onRequestGet({ request, env }) {
     if (!env.DB) return bad('云端数据库暂时不可用', 503);
     const db = env.DB, url = new URL(request.url);
     const gid = url.searchParams.get('g') || '';
+    const plan = PLAN_IDS.includes(url.searchParams.get('p')) ? url.searchParams.get('p') : 'B';
     const invite = url.searchParams.get('i') || '';
 
     /* 邀请预览：扫码后进组前那一屏需要的信息，不需要钥匙 */
@@ -170,10 +175,12 @@ export async function onRequestGet({ request, env }) {
       return J({ pending: true, group: { id: gid, name: ctx.group.name }, me: memberPublic(me), issuedToken: issued });
 
     await db.prepare('UPDATE members SET seen_at=? WHERE group_id=? AND member_id=?').bind(now(), gid, me.member_id).run();
+    const seeded = await db.prepare('SELECT 1 FROM modules WHERE group_id=? AND plan=? LIMIT 1').bind(gid, plan).first();
+    if (!seeded) await db.batch(seedStatements(db, gid, me.member_id, me.name, now(), plan));
     const owner = me.role === 'owner';
     const [modules, entries, members] = await Promise.all([
-      db.prepare('SELECT * FROM modules WHERE group_id=? ORDER BY sort').bind(gid).all(),
-      db.prepare(`SELECT * FROM entries WHERE group_id=? AND (scope='group' OR owner=?)`).bind(gid, me.member_id).all(),
+      db.prepare('SELECT * FROM modules WHERE group_id=? AND plan=? ORDER BY sort').bind(gid, plan).all(),
+      db.prepare(`SELECT * FROM entries WHERE group_id=? AND plan=? AND (scope='group' OR owner=?)`).bind(gid, plan, me.member_id).all(),
       db.prepare(`SELECT * FROM members WHERE group_id=? AND status<>'removed' ORDER BY joined_at`).bind(gid).all()
     ]);
     const g = ctx.group;
@@ -185,7 +192,7 @@ export async function onRequestGet({ request, env }) {
       pendingMembers: owner ? members.results.filter(m => m.status === 'pending').map(memberPublic) : [],
       modules: modules.results.map(m => ({ ...m, fields: JSON.parse(m.fields), hidden: !!m.hidden, locked: !!m.locked })),
       entries: entries.results.map(e => ({ ...e, data: JSON.parse(e.data), deleted: !!e.deleted })),
-      issuedToken: issued, serverTime: now()
+      plan, issuedToken: issued, serverTime: now()
     });
   } catch (e) {
     return bad('读取失败，请稍后重试；本次没有改动任何数据', 503);
@@ -213,7 +220,8 @@ export async function onRequestPost({ request, env }) {
           .bind(gid, name, key40(), t, mid, inviteCode()),
         db.prepare(`INSERT INTO members (group_id,member_id,name,joined_at,seen_at,role,status) VALUES (?,?,?,?,?,'owner','active')`)
           .bind(gid, mid, who, t, t),
-        ...seedStatements(db, gid, mid, who, t)
+        ...seedStatements(db, gid, mid, who, t, 'A'),
+        ...seedStatements(db, gid, mid, who, t, 'B')
       ];
       await db.batch(st);
       const token = await issueToken(db, gid, mid, '建组设备');
@@ -258,6 +266,7 @@ export async function onRequestPost({ request, env }) {
     const ctx = await auth(db, request, gid);
     if (!ctx || ctx.legacy || !ctx.me) return bad('这条链接已经换过了，请刷新页面重新进组', 403);
     const me = ctx.me, mid = me.member_id, who = me.name;
+    const plan = planId(b.plan);
     if (me.status !== 'active') return bad('组长还没同意你加入', 403);
     const owner = me.role === 'owner';
     const ownerOnly = () => owner ? null : bad('只有组长能做这个操作', 403);
@@ -344,43 +353,43 @@ export async function onRequestPost({ request, env }) {
       if (groupBy && !fields.some(f => f.key === groupBy)) return bad('分组字段不存在');
       const locked = b.locked ? 1 : 0;
       if (a === 'moduleAdd') {
-        const n = await db.prepare('SELECT count(*) c, max(sort) s FROM modules WHERE group_id=?').bind(gid).first();
+        const n = await db.prepare('SELECT count(*) c, max(sort) s FROM modules WHERE group_id=? AND plan=?').bind(gid, plan).first();
         if (n.c >= 24) return bad('模块最多 24 个');
         const id = uid();
         await db.prepare(
-          `INSERT INTO modules (id,group_id,name,icon,layout,fields,group_by,locked,sort,builtin,hidden,version,updated_at,updated_by)
-           VALUES (?,?,?,?,?,?,?,?,?,NULL,0,1,?,?)`
-        ).bind(id, gid, name, icon, layout, JSON.stringify(fields), groupBy, locked, (n.s || 0) + 100, t, who).run();
+          `INSERT INTO modules (id,group_id,plan,name,icon,layout,fields,group_by,locked,sort,builtin,hidden,version,updated_at,updated_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?,NULL,0,1,?,?)`
+        ).bind(id, gid, plan, name, icon, layout, JSON.stringify(fields), groupBy, locked, (n.s || 0) + 100, t, who).run();
         return J({ id });
       }
       const changed = await db.prepare(
         `UPDATE modules SET name=?,icon=?,fields=?,group_by=?,locked=?,hidden=?,version=version+1,updated_at=?,updated_by=?
-         WHERE id=? AND group_id=? AND version=? RETURNING id`
-      ).bind(name, icon, JSON.stringify(fields), groupBy, locked, b.hidden ? 1 : 0, t, who, b.id, gid, b.version).first();
+         WHERE id=? AND group_id=? AND plan=? AND version=? RETURNING id`
+      ).bind(name, icon, JSON.stringify(fields), groupBy, locked, b.hidden ? 1 : 0, t, who, b.id, gid, plan, b.version).first();
       return changed ? J({ ok: true }) : bad('这个模块刚被改过，刷新后再改一次', 409);
     }
     if (a === 'moduleDelete') {
       const deny = ownerOnly(); if (deny) return deny;
-      const m = await db.prepare('SELECT builtin FROM modules WHERE id=? AND group_id=?').bind(b.id, gid).first();
+      const m = await db.prepare('SELECT builtin FROM modules WHERE id=? AND group_id=? AND plan=?').bind(b.id, gid, plan).first();
       if (!m) return bad('模块不存在', 404);
       if (m.builtin) return bad('内置模块不能删除，可以在设置里隐藏它');
       await db.batch([
         db.prepare('DELETE FROM history WHERE group_id=? AND entry_id IN (SELECT id FROM entries WHERE module_id=?)').bind(gid, b.id),
-        db.prepare('DELETE FROM entries WHERE group_id=? AND module_id=?').bind(gid, b.id),
-        db.prepare('DELETE FROM modules WHERE group_id=? AND id=?').bind(gid, b.id)
+        db.prepare('DELETE FROM entries WHERE group_id=? AND plan=? AND module_id=?').bind(gid, plan, b.id),
+        db.prepare('DELETE FROM modules WHERE group_id=? AND plan=? AND id=?').bind(gid, plan, b.id)
       ]);
       return J({ ok: true });
     }
     if (a === 'moduleSort') {
       const deny = ownerOnly(); if (deny) return deny;
       if (!Array.isArray(b.order) || b.order.length > 24) return bad('排序参数无效');
-      await db.batch(b.order.map((id, i) => db.prepare('UPDATE modules SET sort=? WHERE id=? AND group_id=?').bind((i + 1) * 100, id, gid)));
+      await db.batch(b.order.map((id, i) => db.prepare('UPDATE modules SET sort=? WHERE id=? AND group_id=? AND plan=?').bind((i + 1) * 100, id, gid, plan)));
       return J({ ok: true });
     }
 
     /* —— 记录 —— */
     const loadMod = async id => {
-      const m = await db.prepare('SELECT * FROM modules WHERE id=? AND group_id=?').bind(id, gid).first();
+      const m = await db.prepare('SELECT * FROM modules WHERE id=? AND group_id=? AND plan=?').bind(id, gid, plan).first();
       return m ? { ...m, locked: !!m.locked } : null;
     };
     const denyEdit = mod => bad(mod?.locked ? '这个模块只有组长能改' : '你是只读成员，改不了', 403);
@@ -400,17 +409,17 @@ export async function onRequestPost({ request, env }) {
         data[k] = s;
       }
       if (a === 'entryAdd') {
-        const n = await db.prepare('SELECT count(*) c FROM entries WHERE group_id=?').bind(gid).first();
+        const n = await db.prepare('SELECT count(*) c FROM entries WHERE group_id=? AND plan=?').bind(gid, plan).first();
         if (n.c >= 3000) return bad('记录太多了，先清理一下回收站');
         const id = uid();
         await db.prepare(
-          `INSERT INTO entries (id,group_id,module_id,title,data,scope,owner,day,sort,version,updated_at,updated_by,deleted)
-           VALUES (?,?,?,?,?,?,?,?,?,1,?,?,0)`
-        ).bind(id, gid, b.module, title, JSON.stringify(data), scope, mid, day, Number(b.sort) || 0, t, who).run();
+          `INSERT INTO entries (id,group_id,plan,module_id,title,data,scope,owner,day,sort,version,updated_at,updated_by,deleted)
+           VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,0)`
+        ).bind(id, gid, plan, b.module, title, JSON.stringify(data), scope, mid, day, Number(b.sort) || 0, t, who).run();
         return J({ id });
       }
-      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND (scope='group' OR owner=?)`)
-        .bind(b.id, gid, mid).first();
+      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND plan=? AND (scope='group' OR owner=?)`)
+        .bind(b.id, gid, plan, mid).first();
       if (!old) return bad('记录不存在或没有权限', 404);
       if (old.scope === 'private' && old.owner !== mid) return bad('私人记录只有本人能改', 403);
       if (old.scope !== scope && old.owner !== mid) return bad('只有添加这条的人能改可见范围', 403);
@@ -418,35 +427,35 @@ export async function onRequestPost({ request, env }) {
       await snapshot(db, gid, old, 'update', who, t);
       const changed = await db.prepare(
         `UPDATE entries SET title=?,data=?,scope=?,day=?,sort=?,version=version+1,updated_at=?,updated_by=?
-         WHERE id=? AND group_id=? AND version=? AND deleted=0 RETURNING id`
-      ).bind(title, JSON.stringify(data), scope, day, Number(b.sort) || 0, t, who, b.id, gid, b.version).first();
+         WHERE id=? AND group_id=? AND plan=? AND version=? AND deleted=0 RETURNING id`
+      ).bind(title, JSON.stringify(data), scope, day, Number(b.sort) || 0, t, who, b.id, gid, plan, b.version).first();
       return changed ? J({ ok: true }) : bad('队友刚刚改过这一条。你填的内容还在，刷新看到最新版本后再合并一次。', 409);
     }
 
     if (a === 'entryDelete' || a === 'entryRestore') {
-      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND (scope='group' OR owner=?)`)
-        .bind(b.id, gid, mid).first();
+      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND plan=? AND (scope='group' OR owner=?)`)
+        .bind(b.id, gid, plan, mid).first();
       if (!old) return bad('记录不存在或没有权限', 404);
       const mod = await loadMod(old.module_id);
       if (!mod || !canEdit(ctx, mod)) return denyEdit(mod);
       if (old.version !== b.version) return bad('队友刚刚改过这一条，刷新后再试', 409);
       await snapshot(db, gid, old, a === 'entryDelete' ? 'delete' : 'restore', who, t);
       const changed = await db.prepare(
-        `UPDATE entries SET deleted=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND group_id=? AND version=? RETURNING id`
-      ).bind(a === 'entryDelete' ? 1 : 0, t, who, b.id, gid, b.version).first();
+        `UPDATE entries SET deleted=?,version=version+1,updated_at=?,updated_by=? WHERE id=? AND group_id=? AND plan=? AND version=? RETURNING id`
+      ).bind(a === 'entryDelete' ? 1 : 0, t, who, b.id, gid, plan, b.version).first();
       return changed ? J({ ok: true }) : bad('队友刚刚改过这一条，刷新后再试', 409);
     }
 
     if (a === 'entryHistory') {
-      const en = await db.prepare(`SELECT id FROM entries WHERE id=? AND group_id=? AND (scope='group' OR owner=?)`)
-        .bind(b.id, gid, mid).first();
+      const en = await db.prepare(`SELECT id FROM entries WHERE id=? AND group_id=? AND plan=? AND (scope='group' OR owner=?)`)
+        .bind(b.id, gid, plan, mid).first();
       if (!en) return bad('记录不存在', 404);
       const rows = await db.prepare('SELECT * FROM history WHERE entry_id=? ORDER BY version DESC').bind(b.id).all();
       return J({ history: rows.results.map(h => ({ ...h, data: JSON.parse(h.data), deleted: !!h.deleted })) });
     }
     if (a === 'entryRevert') {
-      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND (scope='group' OR owner=?)`)
-        .bind(b.id, gid, mid).first();
+      const old = await db.prepare(`SELECT * FROM entries WHERE id=? AND group_id=? AND plan=? AND (scope='group' OR owner=?)`)
+        .bind(b.id, gid, plan, mid).first();
       if (!old) return bad('记录不存在', 404);
       const mod = await loadMod(old.module_id);
       if (!mod || !canEdit(ctx, mod)) return denyEdit(mod);
@@ -455,15 +464,15 @@ export async function onRequestPost({ request, env }) {
       await snapshot(db, gid, old, 'revert', who, t);
       await db.prepare(
         `UPDATE entries SET title=?,data=?,scope=?,day=?,sort=?,deleted=?,version=version+1,updated_at=?,updated_by=?
-         WHERE id=? AND group_id=?`
-      ).bind(h.title, h.data, h.scope, h.day, h.sort, h.deleted, t, who, b.id, gid).run();
+         WHERE id=? AND group_id=? AND plan=?`
+      ).bind(h.title, h.data, h.scope, h.day, h.sort, h.deleted, t, who, b.id, gid, plan).run();
       return J({ ok: true });
     }
     if (a === 'entryPurge') {
       const deny = ownerOnly(); if (deny) return deny;
       await db.batch([
-        db.prepare('DELETE FROM history WHERE group_id=? AND entry_id IN (SELECT id FROM entries WHERE group_id=? AND deleted=1)').bind(gid, gid),
-        db.prepare('DELETE FROM entries WHERE group_id=? AND deleted=1').bind(gid)
+        db.prepare('DELETE FROM history WHERE group_id=? AND entry_id IN (SELECT id FROM entries WHERE group_id=? AND plan=? AND deleted=1)').bind(gid, gid, plan),
+        db.prepare('DELETE FROM entries WHERE group_id=? AND plan=? AND deleted=1').bind(gid, plan)
       ]);
       return J({ ok: true });
     }

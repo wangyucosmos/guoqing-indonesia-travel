@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_history_entry ON history (entry_id, version DESC)
 CREATE TABLE IF NOT EXISTS modules (
   id          TEXT PRIMARY KEY,
   group_id    TEXT NOT NULL,
+  plan        TEXT NOT NULL DEFAULT 'A', -- A / B，旧库迁移时旧数据归 B
   name        TEXT NOT NULL,
   icon        TEXT NOT NULL DEFAULT '📌',
   layout      TEXT NOT NULL DEFAULT 'card',   -- card | check | day
@@ -74,11 +75,12 @@ CREATE TABLE IF NOT EXISTS modules (
   updated_at  TEXT NOT NULL,
   updated_by  TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_modules_group ON modules (group_id, sort);
+CREATE INDEX IF NOT EXISTS idx_modules_group ON modules (group_id, plan, sort);
 
 CREATE TABLE IF NOT EXISTS entries (
   id          TEXT PRIMARY KEY,
   group_id    TEXT NOT NULL,
+  plan        TEXT NOT NULL DEFAULT 'A', -- 与所属模块一致
   module_id   TEXT NOT NULL,
   title       TEXT NOT NULL DEFAULT '',
   data        TEXT NOT NULL DEFAULT '{}',     -- JSON，键对应所属模块的 fields
@@ -91,5 +93,5 @@ CREATE TABLE IF NOT EXISTS entries (
   updated_by  TEXT NOT NULL,
   deleted     INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_entries_group  ON entries (group_id, module_id, deleted);
+CREATE INDEX IF NOT EXISTS idx_entries_group  ON entries (group_id, plan, module_id, deleted);
 CREATE INDEX IF NOT EXISTS idx_entries_day    ON entries (group_id, day);

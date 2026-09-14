@@ -241,3 +241,12 @@ dialog[open]::backdrop{animation:fadeIn .24s ease}
 @keyframes flash{0%{box-shadow:0 0 0 0 rgba(13,110,126,.0)}30%{box-shadow:0 0 0 4px rgba(13,110,126,.45)}100%{box-shadow:0 0 0 0 rgba(13,110,126,0)}}
 .linkbox.flash{animation:flash 1.2s ease-out 1;border-radius:9px}
 .linkbox code{background:var(--primary-soft);color:var(--primary);padding:1px 6px;border-radius:5px;font-size:12px}
+
+/* ---------- A / B 旅行方案 ---------- */
+.plan-switcher{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0 12px;text-align:left}
+.plan-card{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg);min-height:132px;transition:transform .2s,border-color .2s,box-shadow .2s}
+.plan-card strong{font-size:17px;color:var(--fg)}.plan-card span{font-size:13px;color:var(--primary);font-weight:650}.plan-card small{font-size:12px;line-height:1.45}.plan-card em{font-size:11.5px;color:var(--muted);font-style:normal;margin-top:auto}
+.plan-card.selected{border-color:var(--primary);background:linear-gradient(135deg,var(--primary-soft),var(--card));box-shadow:0 6px 20px rgba(13,110,126,.12)}
+@media(hover:hover){.plan-card:hover{transform:translateY(-2px)}}
+.plan-compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.plan-compare>div{border-left:3px solid var(--primary);background:var(--primary-soft);border-radius:9px;padding:10px 12px}.plan-compare b,.plan-compare span,.plan-compare small{display:block}.plan-compare span{font-size:12.5px;line-height:1.55;margin:3px 0}.plan-compare small{font-size:11.5px}
+@media(max-width:560px){.plan-switcher,.plan-compare{grid-template-columns:1fr}.plan-card{min-height:112px}}
